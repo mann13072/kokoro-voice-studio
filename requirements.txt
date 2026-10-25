@@ -1,0 +1,21 @@
+# Tested with Python 3.13 on Windows 11.
+# Only the libraries the app uses directly are listed; their own dependencies install automatically.
+
+# Speech
+kokoro-onnx==0.6.1
+onnxruntime==1.20.1
+
+# Audio
+soundfile==0.14.0
+sounddevice==0.5.5
+numpy==2.3.1
+
+# Window
+customtkinter==6.0.0
+tkinterdnd2==0.7.0
+Pillow==10.4.0
+
+# Reading documents
+Markdown==3.10
+pdfminer.six==20251230
+python-docx==1.2.0

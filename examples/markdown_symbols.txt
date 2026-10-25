@@ -1,0 +1,13 @@
+# Kokoro Test
+
+Hello! This is a short test of my new text to speech app.
+
+---
+
+It should skip divider lines like the one above, and keep reading the real sentences.
+
+* * *
+
+Numbers work too: today is the 25th, and the total is 3,450 dollars.
+
+Thanks for listening. Goodbye!

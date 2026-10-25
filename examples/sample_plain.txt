@@ -1,0 +1,5 @@
+Hello, and welcome to Kokoro Voice Studio.
+
+This is a short plain text file. It has two paragraphs, so you can hear the pause between them. The second paragraph mentions a price of 3,450 dollars and a date, the 25th of October, to show how numbers are read.
+
+Try changing the voice and the speed, then convert it again.

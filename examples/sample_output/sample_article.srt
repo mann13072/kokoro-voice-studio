@@ -1,0 +1,111 @@
+1
+00:00:00,115 --> 00:00:01,920
+A Short Guide to Home Composting.
+
+2
+00:00:02,499 --> 00:00:06,599
+Composting turns kitchen and garden waste into rich soil.
+
+3
+00:00:06,674 --> 00:00:11,324
+It needs very little equipment, and most of the work is done by tiny organisms that
+
+4
+00:00:11,374 --> 00:00:12,499
+are already around you.
+
+5
+00:00:13,188 --> 00:00:14,307
+What goes in the bin.
+
+6
+00:00:14,881 --> 00:00:18,381
+A healthy compost heap needs two kinds of material.
+
+7
+00:00:18,481 --> 00:00:21,656
+Green materials are wet and rich in nitrogen.
+
+8
+00:00:21,731 --> 00:00:24,806
+Brown materials are dry and rich in carbon.
+
+9
+00:00:24,881 --> 00:00:27,800
+Aim for roughly one part green to two parts brown.
+
+10
+00:00:28,453 --> 00:00:32,209
+Green: vegetable peelings, coffee grounds, fresh grass clippings.
+
+11
+00:00:32,871 --> 00:00:36,089
+Brown: dry leaves, cardboard, straw, torn paper.
+
+12
+00:00:36,698 --> 00:00:40,469
+Keep out: meat, dairy, oils, and anything treated with chemicals.
+
+13
+00:00:41,171 --> 00:00:42,265
+Keeping it healthy.
+
+14
+00:00:42,819 --> 00:00:46,369
+Turn the heap every week or two so that air reaches the middle.
+
+15
+00:00:46,419 --> 00:00:49,144
+The pile should feel like a wrung-out sponge.
+
+16
+00:00:49,219 --> 00:00:52,044
+If it is too wet, add more brown material.
+
+17
+00:00:52,119 --> 00:00:54,458
+If it is too dry, sprinkle it with water.
+
+18
+00:00:55,087 --> 00:00:57,412
+Patience is the secret ingredient.
+
+19
+00:00:57,487 --> 00:00:59,925
+Most piles need between two and six months.
+
+20
+00:01:00,589 --> 00:01:05,014
+A simple way to track the temperature is a small script that logs a reading each
+
+21
+00:01:05,064 --> 00:01:05,337
+day:
+
+22
+00:01:05,866 --> 00:01:07,006
+Code block skipped.
+
+23
+00:01:07,635 --> 00:01:11,206
+More tips are collected at link for anyone who wants to read further.
+
+24
+00:01:11,865 --> 00:01:13,389
+Using the finished compost.
+
+25
+00:01:14,024 --> 00:01:18,399
+Finished compost is dark, crumbly, and smells like a forest floor.
+
+26
+00:01:18,499 --> 00:01:23,074
+Spread a thin layer over flower beds, or mix a handful into the soil when planting
+
+27
+00:01:23,124 --> 00:01:24,299
+vegetables.
+
+28
+00:01:24,374 --> 00:01:25,642
+Your garden will thank you.

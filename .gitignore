@@ -1,0 +1,24 @@
+# --- Created by the app on the user's machine (never commit these) ---
+models/*
+!models/README.md
+data/
+output/
+*.part
+.kokoro_write_test
+
+# --- Build output ---
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# --- Python environments ---
+.venv/
+venv/
+
+# --- Editor and OS files ---
+.vscode/
+.idea/
+Thumbs.db
+*.log
