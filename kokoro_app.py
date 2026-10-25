@@ -16,6 +16,7 @@ Everything the app creates lives in one folder (the folder of this script or of 
 import bisect
 import codecs
 import json
+import math
 import os
 import queue
 import re
@@ -896,10 +897,11 @@ def build_segments(chunk, timings, offset, chunk_seconds, paragraph_end):
 
 
 def synthesize(kokoro, text, out_path, voice, speed, progress=None, cancel=None,
-               pause=PAUSE_SECONDS, on_chunk=None):
+               pause=PAUSE_SECONDS, on_chunk=None, on_audio=None):
     """Speak text into an MP3 written chunk by chunk.
 
-    progress(i, total) runs after each chunk; on_chunk(i, total, text) runs before it.
+    progress(i, total) runs after each chunk; on_chunk(i, total, text) runs before it;
+    on_audio(seconds) reports how much audio has been written so far.
     Returns (duration in seconds, timed segments).
     """
     import numpy as np
@@ -930,6 +932,8 @@ def synthesize(kokoro, text, out_path, voice, speed, progress=None, cancel=None,
                 out.write(samples)
                 written += len(samples)
                 pause_next = pause_after
+                if on_audio:
+                    on_audio(written / rate)
             if progress:
                 progress(i, total)
         if out is None:
@@ -1140,18 +1144,59 @@ class AudioPlayer:
 # The window: theme and helpers
 # --------------------------------------------------------------------------
 
-# (light, dark) colour pairs, so every widget follows the Light/Dark switch
-BG, SIDE, PANEL = ("#f4f1ea", "#0e1014"), ("#ece8de", "#12151b"), ("#ffffff", "#171b22")
-CARD, CARD2, LINE = ("#faf8f3", "#1c212b"), ("#e3ddcd", "#222835"), ("#e6e1d6", "#2a303d")
-TEXT, MUTED, DIM = ("#1c1f26", "#e9ecf3"), ("#6b7280", "#8c95a9"), ("#9a9486", "#5d6578")
-ACCENT, ON_ACCENT, ACCENT_SOFT = ("#0f766e", "#2dd4bf"), ("#ffffff", "#04211d"), ("#d5efe9", "#15332f")
+# (light, dark) colour pairs, so every widget follows the Light/Dark switch.
+# Every text colour below reaches at least 4.5:1 contrast on the surfaces it is used on.
+BG, SIDE, PANEL = ("#f5f3ed", "#0b0d12"), ("#ffffff", "#12151c"), ("#ffffff", "#12151c")
+CARD, CARD2, LINE = ("#f0ede5", "#181c25"), ("#e6e2d7", "#202533"), ("#e3dfd3", "#262b3a")
+TEXT, TEXT2, MUTED = ("#16181f", "#f2f4f9"), ("#454b5a", "#b4bccd"), ("#5f6676", "#98a1b6")
+DIM = MUTED
+ACCENT, ON_ACCENT, ACCENT_SOFT = ("#0f766e", "#2dd4bf"), ("#ffffff", "#04211d"), ("#d8efea", "#12302e")
+AMBER_SOFT, BLUE = ("#fdeec5", "#3a3214"), ("#2563eb", "#38bdf8")
 AMBER, FONT = "#ffd166", "Segoe UI"
 SHORT_LANG = {"English (US)": "US", "English (UK)": "UK"}
 TABLES_MENU = {"Caption only": "caption", "Skip": "skip"}
-CODE_MENU = {"Say “code skipped”": "say", "Skip silently": "skip"}
+CODE_MENU = {"Announce": "say", "Skip silently": "skip"}
 LINKS_MENU = {"Say “link”": "say", "Remove": "drop"}
-EXT_COLORS = {".pdf": "#e85555", ".md": "#3b82f6", ".markdown": "#3b82f6", ".txt": "#8b5cf6",
+EXT_COLORS = {".pdf": "#e5534b", ".md": "#3b82f6", ".markdown": "#3b82f6", ".txt": "#8b5cf6",
               ".docx": "#2563eb", ".html": "#f59e0b", ".htm": "#f59e0b"}
+COVER_COLORS = ("#0f766e", "#1d4ed8", "#b45309", "#6d28d9", "#be123c", "#15803d", "#0e7490", "#9333ea")
+SPEED_PRESETS = (0.75, 1.0, 1.25, 1.5, 2.0)
+PAUSE_PRESETS = (0.0, 0.4, 0.8)
+
+# Icons come from the icon font that ships with Windows (Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on
+# Windows 10); the code points were checked by rendering them. Without the font, plain symbols are used.
+ICON_CODES = {
+    "add": 0xE710, "library": 0xE8F1, "mic": 0xE720, "settings": 0xE713, "play": 0xE768, "pause": 0xE769,
+    "prev": 0xE892, "next": 0xE893, "rewind": 0xEB9E, "fastfwd": 0xEB9D, "star": 0xE734, "starfill": 0xE735,
+    "repeat": 0xE8EE, "volume": 0xE767, "mute": 0xE74F, "moon": 0xE708, "folder": 0xE8B7, "openfolder": 0xED25,
+    "search": 0xE721, "paste": 0xE77F, "document": 0xE8A5, "upload": 0xE898, "check": 0xE73E, "accept": 0xE8FB,
+    "cancel": 0xE711, "chevdown": 0xE70D, "chevright": 0xE76C, "more": 0xE712, "delete": 0xE74D,
+    "headphone": 0xE7F6, "page": 0xE7C3, "info": 0xE946, "warning": 0xE7BA, "sync": 0xE72C, "grid": 0xF0E2,
+    "list": 0xEA37, "caption": 0xE7F0, "clock": 0xE823, "back": 0xE72B, "home": 0xE80F,
+}
+ICON_FALLBACK = {"add": "+", "library": "☰", "mic": "♪", "settings": "⚙", "play": "▶",
+                 "pause": "❚❚", "prev": "|◀", "next": "▶|", "rewind": "−10", "fastfwd": "+10",
+                 "star": "☆", "starfill": "★", "repeat": "↻", "volume": "♫", "moon": "☾",
+                 "folder": "▤", "search": "⌕", "paste": "⎘", "upload": "↑", "check": "✓",
+                 "accept": "✓", "cancel": "✕", "chevdown": "▾", "delete": "✕", "more": "…",
+                 "info": "i", "warning": "!", "sync": "↻", "back": "←"}
+_ICON_FACE = []
+
+
+def icon_face():
+    if not _ICON_FACE:
+        from tkinter import font as tkfont
+        families = set(tkfont.families())
+        _ICON_FACE.append(next((f for f in ("Segoe Fluent Icons", "Segoe MDL2 Assets") if f in families), ""))
+    return _ICON_FACE[0]
+
+
+def glyph(name):
+    return chr(ICON_CODES[name]) if icon_face() else ICON_FALLBACK.get(name, "•")
+
+
+def icon_font(size=18):
+    return ctk.CTkFont(icon_face() or FONT, size)
 
 
 def mode_color(pair):
@@ -1166,6 +1211,20 @@ def label(parent, text, size=13, weight="normal", color=TEXT, **kw):
     return ctk.CTkLabel(parent, text=text, font=font(size, weight), text_color=color, **kw)
 
 
+def icon_label(parent, name, size=18, color=TEXT, **kw):
+    return ctk.CTkLabel(parent, text=glyph(name), font=icon_font(size), text_color=color, **kw)
+
+
+def icon_button(parent, name, command=None, size=17, box=38, primary=False, **kw):
+    opts = dict(text=glyph(name), font=icon_font(size), width=box, height=box, corner_radius=box // 2, command=command)
+    if primary:
+        opts.update(fg_color=ACCENT, hover_color=ACCENT, text_color=ON_ACCENT)
+    else:
+        opts.update(fg_color=CARD2, hover_color=LINE, text_color=TEXT)
+    opts.update(kw)
+    return ctk.CTkButton(parent, **opts)
+
+
 def fmt_duration(seconds):
     seconds = int(round(seconds))
     if seconds >= 3600:
@@ -1176,19 +1235,86 @@ def fmt_duration(seconds):
 
 
 def card_frame(parent, **kw):
-    return ctk.CTkFrame(parent, corner_radius=16, fg_color=PANEL, border_width=1, border_color=LINE, **kw)
+    return ctk.CTkFrame(parent, corner_radius=16, fg_color=PANEL, **kw)
 
 
-def action_button(parent, text, command=None, primary=False, width=None, height=36, **kw):
+def action_button(parent, text, command=None, primary=False, width=None, height=36, soft=False, **kw):
     opts = dict(text=text, command=command, height=height, corner_radius=10, font=font(13, "bold"))
     if width:
         opts["width"] = width
     if primary:
         opts.update(fg_color=ACCENT, hover_color=ACCENT, text_color=ON_ACCENT)
+    elif soft:
+        opts.update(fg_color=CARD2, hover_color=LINE, text_color=TEXT)
     else:
-        opts.update(fg_color="transparent", hover_color=CARD2, text_color=TEXT, border_width=1, border_color=LINE)
+        opts.update(fg_color="transparent", hover_color=CARD2, text_color=TEXT2, border_width=1, border_color=LINE)
     opts.update(kw)
     return ctk.CTkButton(parent, **opts)
+
+
+AA = 4  # Tk canvas shapes are not anti-aliased, so ring and waveform are drawn 4x larger and scaled down.
+
+
+def _rgba(color):
+    return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5)) + (255,)
+
+
+def ring_image(size, fraction, track, colour, thickness):
+    from PIL import Image, ImageDraw
+    big, pad = size * AA, thickness * AA / 2
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    box = (0, 0, big - 1, big - 1)  # PIL draws the stroke inside this box
+    draw.ellipse(box, outline=_rgba(track), width=thickness * AA)
+    if fraction > 0:
+        draw.arc(box, -90, -90 + 360 * min(fraction, 0.9999), fill=_rgba(colour), width=thickness * AA)
+        radius, centre = (big - thickness * AA) / 2, big / 2
+        for angle in (0, min(fraction, 0.9999) * 2 * math.pi):
+            x, y = centre + radius * math.sin(angle), centre - radius * math.cos(angle)
+            draw.ellipse((x - pad, y - pad, x + pad, y + pad), fill=_rgba(colour))
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def wave_image(width, height, heights, bar_width, colour):
+    """One anti-aliased row of rounded bars, transparent behind; `heights` are half-heights in pixels."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (width * AA, height * AA), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    bins, mid = len(heights), height * AA / 2
+    for k, h in enumerate(heights):
+        x = (k + 0.5) * width * AA / bins
+        draw.rounded_rectangle((x - bar_width * AA / 2, mid - h * AA, x + bar_width * AA / 2, mid + h * AA),
+                               radius=bar_width * AA / 2, fill=_rgba(colour))
+    return img.resize((width, height), Image.LANCZOS)
+
+
+def cover_color(title):
+    import zlib
+    return COVER_COLORS[zlib.crc32((title or "").encode("utf-8")) % len(COVER_COLORS)]
+
+
+def initials(title):
+    words = [w for w in re.split(r"[\s_\-]+", title or "") if w[:1].isalnum()]
+    return "".join(w[0] for w in words[:2]).upper() or "K"
+
+
+class NavItem(ctk.CTkFrame):
+    """One icon-and-caption entry of the left rail."""
+
+    def __init__(self, parent, icon, caption, command):
+        super().__init__(parent, width=66, height=62, corner_radius=13, fg_color="transparent")
+        self.pack_propagate(False)
+        self.icon = icon_label(self, icon, 20, MUTED)
+        self.icon.pack(pady=(10, 2))
+        self.caption = label(self, caption, 11, "bold", MUTED)
+        self.caption.pack()
+        for widget in (self, self.icon, self.caption):
+            widget.bind("<Button-1>", lambda _e: command())
+
+    def set_active(self, on):
+        self.configure(fg_color=CARD2 if on else "transparent")
+        for widget in (self.icon, self.caption):
+            widget.configure(text_color=TEXT if on else MUTED)
 
 
 def fit_window(win, max_w, max_h, min_w, min_h):
@@ -1219,10 +1345,31 @@ def reveal_in_folder(path):
         log_error(traceback.format_exc())
 
 
-class PlayerWindow(ctk.CTkToplevel):
-    """Synced reader: spoken text, original text, chapters and a waveform timeline."""
+class ToolButton(ctk.CTkFrame):
+    """A small rounded control with an icon and a caption."""
 
-    CANVAS_H, STRIP_H = 150, 22
+    def __init__(self, parent, icon, text, command):
+        super().__init__(parent, height=38, corner_radius=11, fg_color=CARD)
+        self.icon = icon_label(self, icon, 15, TEXT2)
+        self.icon.pack(side="left", padx=(12, 6), pady=8)
+        self.text = label(self, text, 12, "bold", TEXT2)
+        self.text.pack(side="left", padx=(0, 14))
+        for widget in (self, self.icon, self.text):
+            widget.bind("<Button-1>", lambda _e: command())
+
+    def set_text(self, text):
+        self.text.configure(text=text)
+
+    def set_active(self, on):
+        self.configure(fg_color=ACCENT_SOFT if on else CARD)
+        for widget in (self.icon, self.text):
+            widget.configure(text_color=ACCENT if on else TEXT2)
+
+
+class PlayerWindow(ctk.CTkToplevel):
+    """Synced reader: chapters, spoken text, original text and a waveform timeline."""
+
+    WAVE_H = 78
 
     def __init__(self, master, path, autoplay=False, on_close=None):
         super().__init__(master)
@@ -1231,7 +1378,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self.path = path
         self.title(f"Player - {os.path.basename(path)}")
         self.configure(fg_color=BG)
-        fit_window(self, 1360, 880, 1000, 640)
+        fit_window(self, 1400, 900, 1020, 640)
         try:
             self.scale = self._get_window_scaling()
         except Exception:
@@ -1247,7 +1394,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self.data, self.rate, self.player, self.decoded, self.load_pct = None, 24000, None, None, 0
         self.cur, self.cur_word, self.cur_ws, self.cur_offsets, self.cur_chapter = -1, -1, None, None, -1
         self.loop_a, self.loop_b, self.sleep_at = None, None, None
-        self.hover_job, self.draw_job, self.head = None, None, None
+        self.draw_job, self.head, self.bars, self.bar_played, self.fine = None, None, [], 0, None
         self._build()
         self._fill_text()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -1298,6 +1445,7 @@ class PlayerWindow(ctk.CTkToplevel):
             return
         self.data, self.rate = data, rate
         self.duration = len(data) / rate
+        self.total_label.configure(text=f"/ {fmt_clock(self.duration)}")
         try:
             self.player = AudioPlayer(data, rate)
         except Exception as exc:
@@ -1305,9 +1453,24 @@ class PlayerWindow(ctk.CTkToplevel):
             self.load_label.configure(text=f"No audio output available ({exc})")
         self.ready = True
         self.load_label.configure(text="")
+        self.fine = self._loudness(2400)
         self._draw()
         if self.autoplay and self.player:
             self.player.play()
+
+    def _loudness(self, bins):
+        """Loudness (RMS) of 'bins' equal slices of the audio, from a thinned copy so long files stay quick."""
+        import numpy as np
+        mono = self.data[:, 0]
+        step = max(len(mono) // 3_000_000, 1)
+        view = mono[::step]
+        edges = np.linspace(0, len(view), bins + 1).astype(int)
+        out = np.zeros(bins)
+        for k in range(bins):
+            part = view[edges[k]:edges[k + 1]]
+            if len(part):
+                out[k] = float(np.sqrt(np.mean(part.astype(np.float32) ** 2)))
+        return out
 
     # ---- building the window ---------------------------------------------
 
@@ -1315,145 +1478,204 @@ class PlayerWindow(ctk.CTkToplevel):
         return int(n * self.scale)
 
     def _build(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-        bar = ctk.CTkFrame(self, corner_radius=0, fg_color=SIDE, height=58)
-        bar.grid(row=0, column=0, sticky="ew")
-        titles = ctk.CTkFrame(bar, fg_color="transparent")
-        titles.pack(side="left", padx=22, pady=8)
-        label(titles, os.path.splitext(os.path.basename(self.path))[0], 16, "bold").pack(anchor="w")
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        name = os.path.splitext(os.path.basename(self.path))[0]
+
+        left = ctk.CTkFrame(self, width=300, corner_radius=0, fg_color=SIDE)
+        left.grid(row=0, column=0, sticky="nsew")
+        left.grid_propagate(False)
+        cover = ctk.CTkFrame(left, height=150, corner_radius=18, fg_color=cover_color(name))
+        cover.pack(fill="x", padx=18, pady=(20, 12))
+        cover.pack_propagate(False)
+        label(cover, initials(name), 46, "bold", "#ffffff", ).place(relx=.5, rely=.5, anchor="center")
+        label(left, name, 17, "bold", wraplength=250, justify="left", anchor="w").pack(fill="x", padx=20)
         meta = [fmt_duration(self.duration)]
         if self.voice:
             meta.insert(0, "Narrated by " + voice_info(self.voice)[0])
-        label(titles, "  ·  ".join(meta), 12, color=MUTED).pack(anchor="w")
+        label(left, "  ·  ".join(meta), 12, color=TEXT2, anchor="w").pack(fill="x", padx=20, pady=(2, 8))
+        chips = ctk.CTkFrame(left, fg_color="transparent")
+        chips.pack(fill="x", padx=20, pady=(0, 6))
         if self.segments:
-            ctk.CTkLabel(bar, text="  ● Synced to text  ", corner_radius=20, fg_color=ACCENT_SOFT, text_color=ACCENT,
-                         font=font(12, "bold")).pack(side="left", padx=8)
-        action_button(bar, "Show file", lambda: reveal_in_folder(self.path), width=96, height=34, text_color=MUTED).pack(side="right", padx=18)
-        self.view = ctk.CTkSegmentedButton(bar, values=["Reader", "Original", "Both"], height=34, command=self._set_view,
-                                           fg_color=PANEL, selected_color=CARD2, selected_hover_color=CARD2,
-                                           unselected_color=PANEL, unselected_hover_color=CARD, text_color=TEXT,
-                                           font=font(12, "bold"))
-        self.view.set("Both" if self.source else "Reader")
-        self.view.pack(side="right", padx=4)
+            ctk.CTkLabel(chips, text="  ● Synced to text  ", corner_radius=14, height=26, fg_color=ACCENT_SOFT,
+                         text_color=ACCENT, font=font(12, "bold")).pack(side="left")
+        icon_button(chips, "openfolder", lambda: reveal_in_folder(self.path), size=14, box=30).pack(side="right")
+        self.rail = ctk.CTkScrollableFrame(left, fg_color="transparent")
+        self.rail.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew")
-        body.grid_columnconfigure(1, weight=1, uniform="panes")
-        body.grid_columnconfigure(2, weight=1, uniform="panes")
-        body.grid_rowconfigure(0, weight=1)
-        self.rail = ctk.CTkScrollableFrame(body, width=232, corner_radius=0, fg_color=SIDE)
-        self.rail.grid(row=0, column=0, sticky="nsew")
-        self.reader_box = ctk.CTkFrame(body, fg_color="transparent")
-        self.reader_box.grid(row=0, column=1, sticky="nsew")
-        self.original_box = ctk.CTkFrame(body, corner_radius=0, fg_color=SIDE)
-        self.original_box.grid(row=0, column=2, sticky="nsew")
-        self.reader = self._text_pane(self.reader_box, "SPOKEN SCRIPT", ("Georgia", 15), mode_color(TEXT), mode_color(BG), 14)
-        self.original = self._text_pane(self.original_box, "ORIGINAL TEXT  ·  grey = not spoken", ("Consolas", 10),
-                                        mode_color(DIM), mode_color(SIDE), 10)
+        self.center = ctk.CTkFrame(self, fg_color="transparent")
+        self.center.grid(row=0, column=1, sticky="nsew")
+        head = ctk.CTkFrame(self.center, fg_color="transparent")
+        head.pack(fill="x", padx=(28, 22), pady=(20, 0))
+        titles = ctk.CTkFrame(head, fg_color="transparent")
+        self.kicker = label(titles, "NOW READING", 12, "bold", ACCENT)
+        self.kicker.pack(anchor="w")
+        self.chapter_title = label(titles, self._short(name), 20, "bold")
+        self.chapter_title.pack(anchor="w")
+        self.view = ctk.CTkSegmentedButton(head, values=["Reader", "With original"], height=34, corner_radius=11, width=210,
+                                           command=self._set_view, fg_color=CARD, selected_color=CARD2,
+                                           selected_hover_color=CARD2, unselected_color=CARD,
+                                           unselected_hover_color=CARD2, text_color=TEXT, font=font(12, "bold"))
+        self.view.set("With original" if self.source else "Reader")
+        self.view.pack(side="right")
+        titles.pack(side="left")
+        self.reader = self._text_pane(self.center, ("Georgia", 17), mode_color(TEXT), mode_color(BG), 14)
+
+        self.original_box = ctk.CTkFrame(self, width=350, corner_radius=0, fg_color=SIDE)
+        title_row = ctk.CTkFrame(self.original_box, fg_color="transparent")
+        title_row.pack(fill="x", padx=20, pady=(20, 0))
+        label(title_row, "ORIGINAL TEXT", 11, "bold", MUTED).pack(side="left")
+        ctk.CTkLabel(title_row, text="  grey = not spoken  ", corner_radius=12, height=24, fg_color=CARD, text_color=TEXT2,
+                     font=font(11, "bold")).pack(side="right")
+        self.original = self._text_pane(self.original_box, ("Consolas", 10), mode_color(MUTED), mode_color(SIDE), 8)
         self._build_rail()
 
         dock = ctk.CTkFrame(self, corner_radius=0, fg_color=SIDE)
-        dock.grid(row=2, column=0, sticky="ew")
-        self.hover_label = label(dock, "", 12, color=MUTED, anchor="w")
-        self.hover_label.pack(fill="x", padx=24, pady=(8, 0))
-        self.canvas = tk.Canvas(dock, height=self.px(self.CANVAS_H), bg=mode_color(SIDE), highlightthickness=0)
-        self.canvas.pack(fill="x", padx=24)
+        dock.grid(row=1, column=0, columnspan=3, sticky="ew")
+        self.hover_label = label(dock, "", 12, color=TEXT2, anchor="w")
+        self.hover_label.pack(fill="x", padx=28, pady=(8, 0))
+        self.canvas = tk.Canvas(dock, height=self.px(self.WAVE_H), bg=mode_color(SIDE), highlightthickness=0)
+        self.canvas.pack(fill="x", padx=28)
         self.canvas.bind("<Configure>", self._schedule_draw)
         self.canvas.bind("<Button-1>", self._click_canvas)
         self.canvas.bind("<B1-Motion>", self._click_canvas)
         self.canvas.bind("<Motion>", self._hover)
         self.canvas.bind("<Leave>", lambda e: self.hover_label.configure(text=""))
-        trans = ctk.CTkFrame(dock, fg_color="transparent")
-        trans.pack(fill="x", padx=24, pady=(6, 14))
-        self.time_label = label(trans, "00:00", 20, "bold")
+
+        bar = ctk.CTkFrame(dock, fg_color="transparent")
+        bar.pack(fill="x", padx=28, pady=(8, 14))
+        bar.grid_columnconfigure((0, 2), weight=1, uniform="bar")
+        times = ctk.CTkFrame(bar, fg_color="transparent")
+        times.grid(row=0, column=0, sticky="w")
+        self.time_label = label(times, "00:00", 20, "bold")
         self.time_label.pack(side="left")
-        self.total_label = label(trans, f" / {fmt_clock(self.duration)}", 14, color=MUTED)
-        self.total_label.pack(side="left", pady=(4, 0))
-        self.load_label = label(trans, "Loading audio… 0%", 12, color=MUTED)
+        self.total_label = label(times, f"/ {fmt_clock(self.duration)}", 14, color=TEXT2)
+        self.total_label.pack(side="left", padx=(6, 0), pady=(4, 0))
+        self.load_label = label(times, "Loading audio… 0%", 12, color=TEXT2)
         self.load_label.pack(side="left", padx=14)
-        centre = ctk.CTkFrame(trans, fg_color="transparent")
-        centre.place(relx=.5, rely=.5, anchor="center")
-        for text, command in (("−10", lambda: self.skip(-10)), ("Prev", self.prev_sentence)):
-            action_button(centre, text, command, width=54, height=38, corner_radius=19).pack(side="left", padx=3)
-        self.play_btn = ctk.CTkButton(centre, text="Play", width=88, height=46, corner_radius=23, fg_color=ACCENT,
-                                      hover_color=ACCENT, text_color=ON_ACCENT, font=font(14, "bold"), command=self.toggle)
-        self.play_btn.pack(side="left", padx=6)
-        for text, command in (("Next", self.next_sentence), ("+10", lambda: self.skip(10))):
-            action_button(centre, text, command, width=54, height=38, corner_radius=19).pack(side="left", padx=3)
-        extras = ctk.CTkFrame(trans, fg_color="transparent")
-        extras.pack(side="right")
-        self.vol = ctk.CTkSlider(extras, from_=0, to=1, width=90, progress_color=ACCENT, button_color="#ffffff",
+        centre = ctk.CTkFrame(bar, fg_color="transparent")
+        centre.grid(row=0, column=1)
+        for text, command in (("−10", lambda: self.skip(-10)),):
+            ctk.CTkButton(centre, text=text, width=44, height=44, corner_radius=22, fg_color=CARD, hover_color=CARD2,
+                          text_color=TEXT, font=font(13, "bold"), command=command).pack(side="left", padx=4)
+        icon_button(centre, "prev", self.prev_sentence, size=16, box=44).pack(side="left", padx=4)
+        self.play_btn = icon_button(centre, "play", self.toggle, size=24, box=62, primary=True)
+        self.play_btn.pack(side="left", padx=8)
+        icon_button(centre, "next", self.next_sentence, size=16, box=44).pack(side="left", padx=4)
+        ctk.CTkButton(centre, text="+10", width=44, height=44, corner_radius=22, fg_color=CARD, hover_color=CARD2,
+                      text_color=TEXT, font=font(13, "bold"), command=lambda: self.skip(10)).pack(side="left", padx=4)
+        tools = ctk.CTkFrame(bar, fg_color="transparent")
+        tools.grid(row=0, column=2, sticky="e")
+        self.mark_btn = ToolButton(tools, "star", "Bookmark", self.add_bookmark)
+        self.mark_btn.pack(side="left", padx=4)
+        self.loop_btn = ToolButton(tools, "repeat", "A–B loop", self._loop_click)
+        self.loop_btn.pack(side="left", padx=4)
+        sleep = ctk.CTkFrame(tools, height=38, corner_radius=11, fg_color=CARD)
+        sleep.pack(side="left", padx=4)
+        icon_label(sleep, "moon", 15, TEXT2).pack(side="left", padx=(12, 0))
+        self.sleep_menu = ctk.CTkOptionMenu(sleep, values=["Sleep: off", "Sleep: 15 min", "Sleep: 30 min", "Sleep: 60 min"],
+                                            width=116, height=30, corner_radius=9, fg_color=CARD, button_color=CARD,
+                                            button_hover_color=CARD2, text_color=TEXT2, font=font(12, "bold"),
+                                            dropdown_font=font(12), command=self._sleep_changed)
+        self.sleep_menu.pack(side="left", padx=(2, 4), pady=4)
+        volume = ctk.CTkFrame(tools, height=38, corner_radius=11, fg_color=CARD)
+        volume.pack(side="left", padx=4)
+        icon_label(volume, "volume", 15, TEXT2).pack(side="left", padx=(12, 6))
+        self.vol = ctk.CTkSlider(volume, from_=0, to=1, width=84, progress_color=ACCENT, button_color="#ffffff",
                                  button_hover_color="#ffffff", fg_color=CARD2, command=self._volume)
         self.vol.set(1.0)
-        self.vol.pack(side="right", padx=(10, 0))
-        label(extras, "Volume", 12, color=MUTED).pack(side="right")
-        self.sleep_menu = ctk.CTkOptionMenu(extras, values=["Sleep: off", "Sleep: 15 min", "Sleep: 30 min", "Sleep: 60 min"],
-                                            width=120, height=32, corner_radius=9, fg_color=CARD2, button_color=CARD2,
-                                            button_hover_color=CARD2, text_color=TEXT, font=font(12),
-                                            dropdown_font=font(12), command=self._sleep_changed)
-        self.sleep_menu.pack(side="right", padx=8)
-        self.loop_btn = action_button(extras, "A–B loop", self._loop_click, width=88, height=32)
-        self.loop_btn.pack(side="right", padx=4)
-        self.mark_btn = action_button(extras, "★ Bookmark", self.add_bookmark, width=100, height=32)
-        self.mark_btn.pack(side="right", padx=4)
+        self.vol.pack(side="left", padx=(0, 12))
         self._set_view(self.view.get())
 
-    def _text_pane(self, parent, title, fnt, fg, bg, pad):
-        label(parent, title, 11, "bold", MUTED).pack(anchor="w", padx=22, pady=(16, 6))
+    def _text_pane(self, parent, fnt, fg, bg, pad):
         holder = ctk.CTkFrame(parent, fg_color="transparent")
-        holder.pack(fill="both", expand=True, padx=(18, 8), pady=(0, 10))
+        holder.pack(fill="both", expand=True, padx=(18, 8), pady=(8, 10))
         text = tk.Text(holder, wrap="word", fg=fg, bg=bg, insertbackground=fg, relief="flat", borderwidth=0,
                        highlightthickness=0, padx=self.px(pad), pady=self.px(pad), cursor="arrow", font=fnt,
-                       spacing1=self.px(2), spacing3=self.px(5), selectbackground=mode_color(CARD2))
+                       spacing1=self.px(2), spacing3=self.px(7), selectbackground=mode_color(CARD2))
         bar = ctk.CTkScrollbar(holder, command=text.yview)
         text.configure(yscrollcommand=bar.set)
         bar.pack(side="right", fill="y")
         text.pack(side="left", fill="both", expand=True)
         dark = ctk.get_appearance_mode() == "Dark"
-        text.tag_configure("cur", background="#3b3413" if dark else "#fff3b0")
+        text.tag_configure("cur", background=mode_color(AMBER_SOFT))
         text.tag_configure("word", background=AMBER if dark else "#ffc83d", foreground="#171207")
         return text
 
     def _set_view(self, value):
-        self.reader_box.grid_remove()
-        self.original_box.grid_remove()
-        if value in ("Reader", "Both") or not self.source:
-            self.reader_box.grid(row=0, column=1, columnspan=1 if value == "Both" and self.source else 2, sticky="nsew")
-        if value in ("Original", "Both") and self.source:
-            self.original_box.grid(row=0, column=2 if value == "Both" else 1, columnspan=1 if value == "Both" else 2,
-                                   sticky="nsew")
+        both = value == "With original" and bool(self.source)
+        if both:
+            self.original_box.grid(row=0, column=2, sticky="nsew")
+            self.center.grid(row=0, column=1, columnspan=1, sticky="nsew")
+        else:
+            self.original_box.grid_remove()
+            self.center.grid(row=0, column=1, columnspan=2, sticky="nsew")
 
     def _build_rail(self):
         for child in self.rail.winfo_children():
             child.destroy()
-        label(self.rail, "CHAPTERS", 10, "bold", DIM).pack(anchor="w", padx=10, pady=(8, 6))
-        self.chapter_btns = []
+        label(self.rail, "CHAPTERS", 11, "bold", MUTED).pack(anchor="w", padx=12, pady=(6, 6))
+        self.chapter_rows = []
         if not self.chapters:
-            label(self.rail, "No chapters in this file", 12, color=MUTED).pack(anchor="w", padx=10, pady=4)
+            label(self.rail, "No chapters in this recording", 12, color=TEXT2).pack(anchor="w", padx=12, pady=4)
         for k, ch in enumerate(self.chapters):
-            btn = ctk.CTkButton(self.rail, text=f"{ch['title'][:26]}\n{fmt_clock(ch['start'])}", anchor="w", height=48,
-                                corner_radius=10, fg_color="transparent", hover_color=CARD, text_color=MUTED,
-                                font=font(12, "bold"), command=lambda t=ch["start"]: self.seek(t))
-            btn.pack(fill="x", pady=1)
-            self.chapter_btns.append(btn)
-        label(self.rail, "BOOKMARKS", 10, "bold", DIM).pack(anchor="w", padx=10, pady=(18, 6))
+            row = ctk.CTkFrame(self.rail, corner_radius=11, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            badge = ctk.CTkLabel(row, text=str(k + 1), width=24, height=24, corner_radius=8, fg_color=CARD, text_color=TEXT2,
+                                 font=font(11, "bold"))
+            badge.pack(side="left", padx=(8, 10), pady=8)
+            stamp = label(row, fmt_clock(ch["start"]), 12, color=MUTED)
+            stamp.pack(side="right", padx=10)
+            title = label(row, ch["title"] if len(ch["title"]) <= 17 else ch["title"][:16] + "…", 13, "bold", TEXT2, anchor="w")
+            title.pack(side="left", fill="x", expand=True)
+            for widget in (row, badge, title, stamp):
+                widget.bind("<Button-1>", lambda _e, t=ch["start"]: self.seek(t))
+            self.chapter_rows.append({"row": row, "badge": badge, "title": title})
+        label(self.rail, "BOOKMARKS", 11, "bold", MUTED).pack(anchor="w", padx=12, pady=(18, 6))
         if not self.bookmarks:
-            label(self.rail, "Press Ctrl+B to add one", 12, color=MUTED).pack(anchor="w", padx=10, pady=2)
+            label(self.rail, "Press Ctrl+B to add one", 12, color=TEXT2).pack(anchor="w", padx=12, pady=2)
         for mark in sorted(self.bookmarks, key=lambda m: m["t"]):
             row = ctk.CTkFrame(self.rail, fg_color="transparent")
             row.pack(fill="x")
-            ctk.CTkButton(row, text=f"★ {fmt_clock(mark['t'])}  {mark.get('label', '')[:18]}", anchor="w", height=30,
-                          corner_radius=8, fg_color="transparent", hover_color=CARD, text_color=MUTED, font=font(12),
-                          command=lambda t=mark["t"]: self.seek(t)).pack(side="left", fill="x", expand=True)
-            ctk.CTkButton(row, text="✕", width=26, height=26, corner_radius=8, fg_color="transparent",
-                          hover_color=CARD, text_color=DIM, font=font(11),
-                          command=lambda m=mark: self.remove_bookmark(m)).pack(side="right")
+            icon_label(row, "starfill", 13, AMBER).pack(side="left", padx=(10, 6))
+            link = ctk.CTkButton(row, text=f"{fmt_clock(mark['t'])}   {mark.get('label', '')[:20]}", anchor="w", height=30,
+                                 corner_radius=8, fg_color="transparent", hover_color=CARD, text_color=TEXT2,
+                                 font=font(12), command=lambda t=mark["t"]: self.seek(t))
+            link.pack(side="left", fill="x", expand=True)
+            icon_button(row, "cancel", lambda m=mark: self.remove_bookmark(m), size=11, box=26,
+                        fg_color="transparent", hover_color=CARD, text_color=MUTED).pack(side="right")
+        self.cur_chapter = -1
+
+    def _style_chapter(self, index, state):
+        parts = self.chapter_rows[index]
+        parts["row"].configure(fg_color=CARD2 if state == "cur" else "transparent")
+        if state == "done":
+            parts["badge"].configure(text=glyph("check"), font=icon_font(11), fg_color=ACCENT_SOFT, text_color=ACCENT)
+        else:
+            parts["badge"].configure(text=str(index + 1), font=font(11, "bold"),
+                                     fg_color=ACCENT if state == "cur" else CARD, text_color=ON_ACCENT if state == "cur" else TEXT2)
+        parts["title"].configure(text_color=TEXT if state == "cur" else TEXT2)
+
+    @staticmethod
+    def _short(text, limit=26):
+        return text if len(text) <= limit else text[:limit - 1] + "…"
+
+    def _set_chapter_header(self, k):
+        if k < 0 or k >= len(self.chapters):
+            return
+        title = self.chapters[k]["title"]
+        m = re.match(r"(Chapter\s+\d+)[.:]?\s*(.*)", title, re.I)
+        if m and m.group(2):
+            self.kicker.configure(text=m.group(1).upper())
+            self.chapter_title.configure(text=self._short(m.group(2)))
+        else:
+            self.kicker.configure(text=f"SECTION {k + 1} OF {len(self.chapters)}")
+            self.chapter_title.configure(text=self._short(title))
 
     def _fill_text(self):
         rd, self.sp_range = self.reader, []
         rd.tag_configure("heading", font=("Georgia", 22, "bold"), spacing1=self.px(14), spacing3=self.px(10))
-        rd.tag_configure("past", foreground=mode_color(DIM))
+        rd.tag_configure("past", foreground=mode_color(MUTED))
         chapter_starts = {ch["start"] for ch in self.chapters}
         for i, seg in enumerate(self.segments):
             a = rd.index("end-1c")
@@ -1504,61 +1726,69 @@ class PlayerWindow(ctk.CTkToplevel):
         c.delete("all")
         c.configure(bg=mode_color(SIDE))
         width, height = max(c.winfo_width(), 100), int(c["height"])
-        strip = self.px(self.STRIP_H)
-        wave_h = height - strip - self.px(14)
-        mid = self.px(12) + wave_h / 2
-        if self.data is not None and len(self.data):
-            mono = self.data[:, 0]
-            n = len(mono)
-            bins = min(width, n)
-            edges = np.linspace(0, n, bins + 1).astype(int)[:-1]
-            lows = np.minimum.reduceat(mono, edges).astype(float)
-            highs = np.maximum.reduceat(mono, edges).astype(float)
-            peak = max(float(mono.max()), -float(mono.min()), 1.0)
-            scale = (wave_h / 2 - 2) / peak
-            for k in range(bins):
-                x = k * width / bins
-                c.create_line(x, mid - highs[k] * scale, x, mid - lows[k] * scale - 1, fill="#3c8f9a")
+        top, bottom = self.px(16), height - self.px(8)
+        mid = (top + bottom) / 2
         if self.loop_a is not None:
             x0 = self.loop_a / self.duration * width
             x1 = (self.loop_b if self.loop_b is not None else self.loop_a) / self.duration * width
-            c.create_rectangle(x0, 0, max(x1, x0 + 2), height - strip, fill="#1d3b4d", outline="#38bdf8", stipple="gray50")
+            c.create_rectangle(x0, top - 2, max(x1, x0 + 3), bottom + 2, fill=mode_color(("#cfe6f5", "#17384a")), outline=mode_color(BLUE))
+        self.bars, self.bar_played = [], 0
+        if self.fine is not None:
+            pitch = self.px(5)
+            bins = max(min(width // pitch, len(self.fine)), 1)
+            edges = np.linspace(0, len(self.fine), bins + 1).astype(int)
+            amps = np.array([self.fine[a:max(b, a + 1)].mean() for a, b in zip(edges[:-1], edges[1:])])
+            ref = max(float(np.percentile(amps, 95)), 1.0)
+            heights = np.clip(amps / ref, 0.07, 1.0) * (bottom - top) / 2
+            from PIL import ImageTk
+            bar = max(self.px(3), 2)
+            self.wave_dim = wave_image(width, height, heights, bar, mode_color(("#c9c4b5", "#33405a")))
+            self.wave_lit = wave_image(width, height, heights, bar, mode_color(ACCENT))
+            self.wave_photo = ImageTk.PhotoImage(self.wave_dim)
+            c.create_image(0, 0, image=self.wave_photo, anchor="nw")
+            self.bars = [None] * bins
+        for ch in self.chapters:
+            x = ch["start"] / self.duration * width
+            c.create_line(x, top - 4, x, bottom + 4, fill=mode_color(MUTED), width=1)
         last_label = -999
         for ch in self.chapters:
             x = ch["start"] / self.duration * width
-            c.create_line(x, 0, x, height - strip, fill=mode_color(DIM))
-            if x - last_label > self.px(78):
-                c.create_text(x + 4, 6, text=ch["title"].replace("Chapter ", "Ch ")[:14], anchor="nw",
+            if x - last_label > self.px(80):
+                c.create_text(x + 5, 1, text=re.sub(r"(?i)^chapter\s+", "Ch ", ch["title"])[:16], anchor="nw",
                               fill=mode_color(MUTED), font=("Segoe UI", 8))
                 last_label = x
         for mark in self.bookmarks:
-            x = mark["t"] / self.duration * width
-            c.create_text(x, height - strip - 4, text="★", fill=AMBER, font=("Segoe UI", 9))
-        top = height - strip
-        for i, seg in enumerate(self.segments):
-            x0 = seg["s"] / self.duration * width
-            x1 = seg["e"] / self.duration * width
-            c.create_rectangle(x0, top, max(x1, x0 + 1), height - 2, fill=("#2a3b52", "#243044")[i % 2] if
-                               ctk.get_appearance_mode() == "Dark" else ("#c9d3e0", "#b5c2d3")[i % 2], outline="")
-        self.head = c.create_line(0, 0, 0, height, fill="#ff5252", width=2)
+            c.create_text(mark["t"] / self.duration * width, bottom + 3, text=glyph("starfill"), fill=AMBER,
+                          font=(icon_face() or "Segoe UI", 9))
+        self.head = c.create_line(0, 0, 0, height, fill="#ff5d5d", width=2)
+
+    def _paint_played(self, t):
+        """Colour the bars up to the playhead, touching only the bars that changed."""
+        if not self.bars:
+            return
+        index = int(t / max(self.duration, 1) * len(self.bars))
+        if index == self.bar_played:
+            return
+        self.bar_played = index
+        shown = self.wave_dim.copy()
+        edge = int(self.wave_dim.width * min(max(index, 0), len(self.bars)) / len(self.bars))
+        if edge > 0:
+            shown.paste(self.wave_lit.crop((0, 0, edge, shown.height)), (0, 0))
+        self.wave_photo.paste(shown)
 
     def _time_at(self, event):
         return max(0.0, min(event.x / max(self.canvas.winfo_width(), 1) * self.duration, self.duration))
 
     def _click_canvas(self, event):
-        if not self.ready:
-            return
-        t = self._time_at(event)
-        if event.y >= int(self.canvas["height"]) - self.px(self.STRIP_H) and self.segments:
-            t = self.starts[max(bisect.bisect_right(self.starts, t) - 1, 0)]
-        self.seek(t)
+        if self.ready:
+            self.seek(self._time_at(event))
 
     def _hover(self, event):
         t = self._time_at(event)
         text = fmt_clock(t)
         if self.segments:
             i = max(bisect.bisect_right(self.starts, t) - 1, 0)
-            text += "   “" + self.segments[i]["t"][:90] + "”"
+            text += "   “" + self.segments[i]["t"][:100] + "”"
         self.hover_label.configure(text=text)
 
     def _click_text(self, widget, event, prefix):
@@ -1605,13 +1835,15 @@ class PlayerWindow(ctk.CTkToplevel):
         t = self.player.time
         if self.loop_a is None:
             self.loop_a = t
-            self.loop_btn.configure(text="Set end…")
+            self.loop_btn.set_text("Set the end…")
+            self.loop_btn.set_active(True)
         elif self.loop_b is None:
             self.loop_a, self.loop_b = sorted((self.loop_a, t))
-            self.loop_btn.configure(text="Loop on ✕")
+            self.loop_btn.set_text("Looping ✕")
         else:
             self.loop_a = self.loop_b = None
-            self.loop_btn.configure(text="A–B loop")
+            self.loop_btn.set_text("A–B loop")
+            self.loop_btn.set_active(False)
         self._draw()
 
     def _sleep_changed(self, value):
@@ -1656,22 +1888,23 @@ class PlayerWindow(ctk.CTkToplevel):
                 self.player.pause()
                 self.sleep_at = None
                 self.sleep_menu.set("Sleep: off")
-            self.play_btn.configure(text="Pause" if self.player.playing else "Play")
+            self.play_btn.configure(text=glyph("pause" if self.player.playing else "play"))
         if self.head is not None:
             x = t / self.duration * max(self.canvas.winfo_width(), 1)
             self.canvas.coords(self.head, x, 0, x, int(self.canvas["height"]))
+            self._paint_played(t)
         self.time_label.configure(text=fmt_clock(t))
         self._highlight(t)
         self.after(40, self._tick)
 
     def _highlight(self, t):
-        if self.chapters and self.chapter_btns:
+        if self.chapters and self.chapter_rows:
             k = bisect.bisect_right([c["start"] for c in self.chapters], t) - 1
             if k != self.cur_chapter:
-                for n, btn in enumerate(self.chapter_btns):
-                    on = n == k
-                    btn.configure(fg_color=CARD if on else "transparent", text_color=TEXT if on else MUTED)
+                for n in range(len(self.chapter_rows)):
+                    self._style_chapter(n, "cur" if n == k else "done" if n < k else "todo")
                 self.cur_chapter = k
+                self._set_chapter_header(k)
         if not self.segments:
             return
         i = bisect.bisect_right(self.starts, t) - 1
@@ -1721,7 +1954,7 @@ class PlayerWindow(ctk.CTkToplevel):
 
 
 class App(ctk.CTk, _DnD):
-    def __init__(self, selftest=None, preload=None, screen=None, autostart=False):
+    def __init__(self, selftest=None, preload=None, screen=None, autostart=False, size=None):
         self.settings = load_settings()
         self.autostart = autostart
         self.quiet, self.last_model_error = False, ""  # quiet: no pop-up dialogs (the self-test sets it)
@@ -1745,21 +1978,25 @@ class App(ctk.CTk, _DnD):
         self.busy, self.cancel, self.q, self.player = False, threading.Event(), queue.Queue(), None
         self.voice = self.settings["voice"]
         self.all_voices = self._list_voices()
-        self.sec_boxes, self.preview_playing, self.source_mode = [], False, "File"
-        self.paste_job = None
+        self.sec_boxes, self.sec_rows, self.preview_playing, self.source_mode = [], [], False, "File"
+        self.voice_play_buttons, self.paste_job = [], None
+        self.voice_lang = tk.StringVar(value="All")
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.screens = {}
-        self._build_sidebar()
+        self._build_rail()
         self.content = ctk.CTkFrame(self, fg_color="transparent")
         self.content.grid(row=0, column=1, sticky="nsew")
         self.content.grid_columnconfigure(0, weight=1)
-        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_rowconfigure(1, weight=1)
+        self._build_banner()
         self._build_create()
-        self._build_right()
+        self._fill_voice_cards()
         self._build_library()
+        self._build_voices()
         self._build_settings()
+        self._set_status("loading", "Loading the voice model…")
         self.show("create")
         threading.Thread(target=self._load_model, daemon=True).start()
         self.after(80, self._poll)
@@ -1770,9 +2007,11 @@ class App(ctk.CTk, _DnD):
             self.after(800, lambda: self.load_path(preload))
         if screen:
             self.after(200, lambda: self.show(screen))
+        if size:
+            self.after(100, lambda: self.geometry(size))
 
     def _fit_to_screen(self):
-        fit_window(self, 1500, 960, 1120, 700)
+        fit_window(self, 1500, 960, 1280, 700)
 
     # ---- small helpers ---------------------------------------------------
 
@@ -1829,28 +2068,21 @@ class App(ctk.CTk, _DnD):
             self.q.put(("fatal", str(exc)))
 
     def _on_download_progress(self, done, total, name):
-        self.status_title.configure(text="●  Downloading voice model")
-        self.status_sub.configure(text=f"{done / 1e6:.0f} of {total / 1e6:.0f} MB. One time only.")
-        self.status_bar.set(done / max(total, 1))
-        self.status_bar.pack(fill="x", padx=14, pady=(0, 12))
-        self.retry_btn.pack_forget()
+        self._set_status("downloading", "Downloading the voice model",
+                         f"{done / 1e6:.0f} of {total / 1e6:.0f} MB. One time only, then it works offline.",
+                         fraction=done / max(total, 1))
 
     def _on_loaded(self, kokoro):
         self.kokoro = kokoro
-        self.status_bar.pack_forget()
-        self.retry_btn.pack_forget()
-        self.status_title.configure(text="●  Your model ready" if using_custom_model() else "●  Kokoro 82M ready")
-        self.status_sub.configure(text="Offline · runs on your CPU")
+        self._set_status("ready", "Voice model ready", "Offline · runs on your CPU")
         self.all_voices = sorted(kokoro.get_voices())
         if self.voice not in self.all_voices:  # a different voices file: keep the language if possible
             self.voice = next((v for v in self.all_voices if v[:1] == self.voice[:1]), self.all_voices[0])
             self.settings["voice"] = self.voice
             self.save_settings()
-            self._update_voice_card()
-        languages = ["All languages"] + [VOICE_LANGS[c] for c in VOICE_LANGS if any(v.startswith(c) for v in self.all_voices)]
-        self.lang_menu.configure(values=languages)
-        self.lang_menu.set(voice_info(self.voice)[1])
-        self._fill_voices()
+        self._fill_voice_cards()
+        self._fill_voice_page()
+        self._update_summary_head()
         self._update_buttons()
         self._refresh_model_card()
 
@@ -1871,8 +2103,7 @@ class App(ctk.CTk, _DnD):
         """Load the given files in the background. The model in use is replaced only if they load."""
         previous = dict(CUSTOM_MODEL)
         CUSTOM_MODEL.update(model=model, voices=voices)
-        self.status_title.configure(text="●  Loading your model…")
-        self.status_sub.configure(text=os.path.basename(model))
+        self._set_status("loading", "Loading your model…", os.path.basename(model))
 
         def work():
             try:
@@ -1893,8 +2124,7 @@ class App(ctk.CTk, _DnD):
 
     def _on_model_failed(self, message):
         from tkinter import messagebox
-        self.status_title.configure(text="●  Your model ready" if using_custom_model() else "●  Kokoro 82M ready")
-        self.status_sub.configure(text="The previous model is still in use")
+        self._set_status("ready", "Voice model ready", "The previous model is still in use")
         if "NOT_IMPLEMENTED" in message:
             reason = ("This computer's ONNX Runtime cannot run that type of model (it needs operations that are not "
                       "available), so it was not used. A fp16 or fp32 version of Kokoro works.")
@@ -1910,8 +2140,7 @@ class App(ctk.CTk, _DnD):
         CUSTOM_MODEL.update(model="", voices="")
         self.settings.update(model_path="", voices_path="")
         self.save_settings()
-        self.status_title.configure(text="●  Loading model…")
-        self.status_sub.configure(text="Back to the default model")
+        self._set_status("loading", "Loading the default model…")
         threading.Thread(target=self._load_model, daemon=True).start()
 
     def _refresh_model_card(self):
@@ -1931,165 +2160,162 @@ class App(ctk.CTk, _DnD):
         self.default_model_btn.configure(state="normal" if using_custom_model() else "disabled")
 
     def _on_fatal(self, message):
-        self.status_bar.pack_forget()
-        self.status_title.configure(text="●  Voice model not ready")
-        self.status_sub.configure(text=message[:110])
-        self.retry_btn.pack(fill="x", padx=14, pady=(0, 12))
+        self._set_status("failed", "The voice model is not ready", message[:170], retry=True)
 
     def _retry_model(self):
-        self.retry_btn.pack_forget()
-        self.status_title.configure(text="●  Loading model…")
-        self.status_sub.configure(text="Trying again")
+        self._set_status("loading", "Trying again…")
         threading.Thread(target=self._load_model, daemon=True).start()
 
     def _update_buttons(self):
         ready = self.kokoro is not None and not self.busy
         usable = ready and bool(self.body.strip())
-        self.convert_btn.configure(state="normal" if usable else "disabled",
-                                   fg_color=ACCENT if usable else ("#a9d3cd", "#1c5a54"))
-        self.preview_btn.configure(state="normal" if self.kokoro is not None else "disabled")
+        self.convert_btn.configure(state="normal" if usable else "disabled", fg_color=ACCENT if usable else CARD2)
+        for button in self.voice_play_buttons:
+            button.configure(state="normal" if self.kokoro is not None else "disabled")
 
-    # ---- navigation ------------------------------------------------------
+    # ---- navigation and status -------------------------------------------
 
     def show(self, name):
         for key, frame in self.screens.items():
-            frame.grid_remove() if key != name else frame.grid(row=0, column=0, sticky="nsew")
-        for key, button in self.nav.items():
-            on = key == name
-            button.configure(fg_color=CARD if on else "transparent", text_color=TEXT if on else MUTED)
-        if name == "create":
-            self.right.grid(row=0, column=2, sticky="nsew")
-        else:
-            self.right.grid_remove()
+            frame.grid_remove() if key != name else frame.grid(row=1, column=0, sticky="nsew")
+        for key, item in self.nav.items():
+            item.set_active(key == name)
         if name == "library":
             self._refresh_library()
-        self._refresh_recent()
+        if name == "voices":
+            self._fill_voice_page()
 
-    def _build_sidebar(self):
-        side = ctk.CTkFrame(self, width=232, corner_radius=0, fg_color=SIDE)
-        side.grid(row=0, column=0, sticky="nsew")
-        side.grid_propagate(False)
-        brand = ctk.CTkFrame(side, fg_color="transparent")
-        brand.pack(fill="x", padx=18, pady=(24, 22))
-        logo = ctk.CTkFrame(brand, width=36, height=36, corner_radius=11, fg_color=ACCENT)
-        logo.pack(side="left")
-        label(logo, "|||", 12, "bold", ON_ACCENT).place(relx=.5, rely=.5, anchor="center")
-        title = ctk.CTkFrame(brand, fg_color="transparent")
-        title.pack(side="left", padx=11)
-        label(title, "Kokoro", 16, "bold").pack(anchor="w")
-        label(title, "Voice Studio", 11, color=MUTED).pack(anchor="w")
+    def _build_rail(self):
+        rail = ctk.CTkFrame(self, width=84, corner_radius=0, fg_color=PANEL)
+        rail.grid(row=0, column=0, sticky="ns")
+        rail.grid_propagate(False)
+        logo = ctk.CTkFrame(rail, width=42, height=42, corner_radius=13, fg_color=ACCENT)
+        logo.pack(pady=(20, 18))
+        logo.pack_propagate(False)
+        icon_label(logo, "mic", 20, ON_ACCENT).place(relx=.5, rely=.5, anchor="center")
         self.nav = {}
-        for key, text in (("create", "New narration"), ("library", "Library"), ("settings", "Settings")):
-            self.nav[key] = ctk.CTkButton(side, text="   " + text, anchor="w", height=42, corner_radius=10,
-                                          fg_color="transparent", hover_color=CARD, text_color=MUTED,
-                                          font=font(13, "bold"), command=lambda k=key: self.show(k))
-            self.nav[key].pack(fill="x", padx=14, pady=2)
-        label(side, "RECENT", 10, "bold", DIM).pack(anchor="w", padx=26, pady=(22, 6))
-        self.recent_box = ctk.CTkFrame(side, fg_color="transparent")
-        self.recent_box.pack(fill="x", padx=14)
-        status = ctk.CTkFrame(side, corner_radius=12, fg_color=CARD, border_width=1, border_color=LINE)
-        status.pack(side="bottom", fill="x", padx=14, pady=16)
-        self.status_title = label(status, "●  Loading model…", 12, "bold")
-        self.status_title.pack(anchor="w", padx=14, pady=(12, 2))
-        self.status_sub = label(status, "This takes a few seconds", 11, color=MUTED, wraplength=170, justify="left")
-        self.status_sub.pack(anchor="w", padx=14, pady=(0, 12))
-        self.status_bar = ctk.CTkProgressBar(status, height=6, progress_color=ACCENT, fg_color=CARD2)
-        self.retry_btn = action_button(status, "Try again", self._retry_model, height=30)
+        for key, icon, caption in (("create", "add", "New"), ("library", "library", "Library"), ("voices", "mic", "Voices")):
+            self.nav[key] = NavItem(rail, icon, caption, lambda k=key: self.show(k))
+            self.nav[key].pack(pady=3)
+        ctk.CTkFrame(rail, fg_color="transparent", height=1).pack(expand=True, fill="y")
+        self.nav["settings"] = NavItem(rail, "settings", "Settings", lambda: self.show("settings"))
+        self.nav["settings"].pack(pady=(0, 8))
+        self.rail_status = label(rail, "● Loading", 11, "bold", MUTED)
+        self.rail_status.pack(pady=(0, 16))
 
-    def _refresh_recent(self):
-        for child in self.recent_box.winfo_children():
-            child.destroy()
-        items = load_json_file(LIBRARY_PATH, [])[:3]
-        if not items:
-            label(self.recent_box, "Nothing yet", 12, color=DIM).pack(anchor="w", padx=12, pady=4)
-        for entry in items:
-            row = ctk.CTkButton(self.recent_box, text="●  " + entry.get("title", "")[:22], anchor="w", height=30,
-                                corner_radius=8, fg_color="transparent", hover_color=CARD, text_color=MUTED,
-                                font=font(12), command=lambda p=entry["path"]: self.open_player(p))
-            row.pack(fill="x", pady=1)
+    def _build_banner(self):
+        """Shown only while the voice model downloads or when it could not be loaded."""
+        self.banner = ctk.CTkFrame(self.content, corner_radius=14, fg_color=AMBER_SOFT)
+        icon_label(self.banner, "info", 20, TEXT).pack(side="left", padx=(16, 10), pady=12)
+        texts = ctk.CTkFrame(self.banner, fg_color="transparent")
+        texts.pack(side="left", pady=8)
+        self.status_title = label(texts, "", 13, "bold")
+        self.status_title.pack(anchor="w")
+        self.status_sub = label(texts, "", 12, color=TEXT2)
+        self.status_sub.pack(anchor="w")
+        self.status_bar = ctk.CTkProgressBar(self.banner, height=8, progress_color=ACCENT, fg_color=CARD2)
+        self.retry_btn = action_button(self.banner, "Try again", self._retry_model, height=32, soft=True)
+
+    def _set_status(self, kind, title, sub="", fraction=None, retry=False):
+        """kind: ready, loading, downloading or failed. The banner is shown for the last two."""
+        self.status_title.configure(text=title)
+        self.status_sub.configure(text=sub)
+        names = {"ready": "● Ready", "loading": "● Loading", "downloading": "● Download", "failed": "● Offline"}
+        self.rail_status.configure(text=names[kind], text_color=ACCENT if kind == "ready" else MUTED)
+        if kind in ("downloading", "failed"):
+            self.banner.grid(row=0, column=0, sticky="ew", padx=28, pady=(16, 0))
+        else:
+            self.banner.grid_remove()
+        self.status_bar.pack_forget()
+        self.retry_btn.pack_forget()
+        if fraction is not None:
+            self.status_bar.set(fraction)
+            self.status_bar.pack(side="left", fill="x", expand=True, padx=16)
+        if retry:
+            self.retry_btn.pack(side="right", padx=14, pady=10)
+
+    def _library_changed(self):
+        if self.screens["library"].winfo_ismapped():
+            self._refresh_library()
 
     # ---- New narration screen --------------------------------------------
 
     def _build_create(self):
         screen = ctk.CTkFrame(self.content, fg_color="transparent")
         self.screens["create"] = screen
-        screen.grid_columnconfigure((0, 1), weight=1, uniform="cols")
-        screen.grid_rowconfigure(2, weight=1)
-        head = ctk.CTkFrame(screen, fg_color="transparent")
-        head.grid(row=0, column=0, columnspan=2, sticky="ew", padx=34, pady=(26, 0))
+        screen.grid_columnconfigure(0, weight=1)
+        screen.grid_rowconfigure(0, weight=1)
+        main = self.create_main = ctk.CTkFrame(screen, fg_color="transparent")
+        main.grid(row=0, column=0, sticky="nsew", padx=(30, 16), pady=(20, 18))
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(3, weight=1)
+        self._build_create_header(main)
+        self._build_doc_card(main)
+        self._build_read_card(main)
+        self._build_voice_card(main)
+        self._build_summary(screen)
+        self._build_progress_view(screen)
+        self._show_source_state()
+        self._update_steps()
+
+    def _build_create_header(self, main):
+        head = ctk.CTkFrame(main, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew")
         titles = ctk.CTkFrame(head, fg_color="transparent")
         titles.pack(side="left")
-        label(titles, "New narration", 24, "bold").pack(anchor="w")
-        label(titles, "Drop a PDF, Word, Markdown or text file. We prepare it for listening, you decide what is read.",
-              13, color=MUTED).pack(anchor="w")
+        label(titles, "New narration", 28, "bold").pack(anchor="w")
+        label(titles, "Three quick choices, then it does the rest.", 13, color=TEXT2).pack(anchor="w")
         self.source_seg = ctk.CTkSegmentedButton(
-            head, values=["File", "Paste text"], height=36, corner_radius=10, command=self._switch_source,
-            fg_color=PANEL, selected_color=CARD2, selected_hover_color=CARD2, unselected_color=PANEL,
-            unselected_hover_color=CARD, text_color=TEXT, font=font(13, "bold"))
+            head, values=["File", "Paste text"], height=36, corner_radius=11, command=self._switch_source,
+            fg_color=CARD, selected_color=CARD2, selected_hover_color=CARD2, unselected_color=CARD,
+            unselected_hover_color=CARD2, text_color=TEXT, font=font(13, "bold"))
         self.source_seg.set("File")
         self.source_seg.pack(side="right")
+        steps = ctk.CTkFrame(main, fg_color="transparent")
+        steps.grid(row=1, column=0, sticky="w", pady=(12, 12))
+        self.step_pills = []
+        for number, caption in ((1, "Document"), (2, "What to read"), (3, "Voice")):
+            pill = ctk.CTkFrame(steps, corner_radius=20, fg_color=PANEL)
+            pill.pack(side="left", padx=(0, 10))
+            badge = ctk.CTkLabel(pill, text=str(number), width=26, height=26, corner_radius=13, fg_color=CARD2,
+                                 text_color=TEXT, font=font(12, "bold"))
+            badge.pack(side="left", padx=(6, 8), pady=6)
+            text = label(pill, caption, 13, "bold", TEXT2)
+            text.pack(side="left", padx=(0, 16))
+            self.step_pills.append((badge, text))
 
-        self.src_card = card_frame(screen)
-        self.src_card.grid(row=1, column=0, columnspan=2, sticky="ew", padx=34, pady=(20, 18))
+    def _update_steps(self):
+        has_doc = bool(self.doc and not self.doc.get("pending"))
+        states = (("done" if has_doc else "cur"), ("cur" if has_doc else "todo"), "todo")
+        for (badge, text), state in zip(self.step_pills, states):
+            number = badge.cget("text") if badge.cget("text") != glyph("check") else None
+            if state == "done":
+                badge.configure(text=glyph("check"), font=icon_font(12), fg_color=ACCENT, text_color=ON_ACCENT)
+            else:
+                index = self.step_pills.index((badge, text)) + 1
+                badge.configure(text=str(index), font=font(12, "bold"),
+                                fg_color=TEXT if state == "cur" else CARD2, text_color=BG if state == "cur" else TEXT)
+            text.configure(text_color=TEXT if state != "todo" else TEXT2)
+
+    def _build_doc_card(self, main):
+        self.src_card = card_frame(main)
+        self.src_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         self._build_drop_zone()
         self._build_file_chip()
         self._build_paste_box()
-        self._build_progress_card(screen)
-        self._show_source_state()
-
-        # what to read
-        box1 = card_frame(screen)
-        box1.grid(row=2, column=0, sticky="nsew", padx=(34, 9), pady=(0, 26))
-        label(box1, "WHAT SHOULD BE READ", 11, "bold", MUTED).pack(anchor="w", padx=20, pady=(18, 4))
-        self.sections_frame = ctk.CTkScrollableFrame(box1, fg_color="transparent", height=96)
-        self.sections_frame.pack(fill="both", expand=True, padx=8)
-        self.no_sections = label(self.sections_frame, "Choose a file to see its chapters.", 12, color=MUTED)
-        self.no_sections.pack(anchor="w", padx=12, pady=6)
-        options = ctk.CTkFrame(box1, fg_color="transparent")
-        options.pack(fill="x", padx=20, pady=(2, 12))
-        self.option_menus = {}
-        for key, title, menu in (("tables", "Tables", TABLES_MENU), ("figures", "Figures", TABLES_MENU),
-                                 ("code", "Code blocks", CODE_MENU), ("links", "Web links", LINKS_MENU)):
-            row = ctk.CTkFrame(options, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            label(row, title, 13, "bold").pack(side="left")
-            names = list(menu)
-            current = next(n for n, v in menu.items() if v == self.settings[key])
-            menu_widget = ctk.CTkOptionMenu(row, values=names, width=178, height=30, corner_radius=8,
-                                            fg_color=CARD2, button_color=CARD2, button_hover_color=CARD2,
-                                            text_color=TEXT, font=font(12), dropdown_font=font(12),
-                                            command=lambda value, k=key, m=menu: self._option_changed(k, m[value]))
-            menu_widget.set(current)
-            menu_widget.pack(side="right")
-            self.option_menus[key] = menu_widget
-
-        # preview
-        box2 = card_frame(screen)
-        box2.grid(row=2, column=1, sticky="nsew", padx=(9, 34), pady=(0, 26))
-        label(box2, "PREVIEW OF WHAT WILL BE SPOKEN", 11, "bold", MUTED).pack(anchor="w", padx=20, pady=(18, 8))
-        self.preview = ctk.CTkTextbox(box2, corner_radius=10, fg_color=PANEL, text_color=("#222222", "#cdd2de"),
-                                      font=font(15, family="Georgia"), wrap="word", height=170)
-        self.preview.pack(fill="both", expand=True, padx=14)
-        self.preview.configure(state="disabled")
-        stats = ctk.CTkFrame(box2, fg_color="transparent")
-        stats.pack(fill="x", padx=10, pady=(10, 4))
-        self.stat_values = []
-        for k, caption in enumerate(("words to read", "audio length", "to convert")):
-            cell = ctk.CTkFrame(stats, corner_radius=11, fg_color=CARD)
-            cell.grid(row=0, column=k, sticky="ew", padx=4)
-            stats.grid_columnconfigure(k, weight=1)
-            value = label(cell, "–", 19, "bold")
-            value.pack(anchor="w", padx=12, pady=(10, 0))
-            label(cell, caption, 11, color=MUTED).pack(anchor="w", padx=12, pady=(0, 10))
-            self.stat_values.append(value)
-        self.extra_stats = label(box2, "", 12, color=MUTED, wraplength=380, justify="left")
-        self.extra_stats.pack(anchor="w", padx=18, pady=(2, 14))
 
     def _build_drop_zone(self):
-        self.drop_zone = ctk.CTkFrame(self.src_card, corner_radius=14, fg_color=CARD, border_width=2, border_color=LINE)
-        label(self.drop_zone, "Drop a file here", 18, "bold").pack(pady=(26, 2))
-        label(self.drop_zone, "PDF, Word, Markdown, HTML or plain text", 12, color=MUTED).pack()
-        action_button(self.drop_zone, "Browse files", self._browse, primary=True, width=140, height=38).pack(pady=(14, 24))
+        self.drop_zone = ctk.CTkFrame(self.src_card, corner_radius=14, fg_color=CARD)
+        tile = ctk.CTkFrame(self.drop_zone, width=52, height=52, corner_radius=15, fg_color=ACCENT_SOFT)
+        tile.pack(side="left", padx=(16, 14), pady=14)
+        tile.pack_propagate(False)
+        icon_label(tile, "upload", 22, ACCENT).place(relx=.5, rely=.5, anchor="center")
+        texts = ctk.CTkFrame(self.drop_zone, fg_color="transparent")
+        texts.pack(side="left")
+        label(texts, "Drop a document here", 16, "bold").pack(anchor="w")
+        label(texts, "PDF, Word, Markdown, HTML or text. Nothing leaves your computer.", 12, color=TEXT2).pack(anchor="w")
+        action_button(self.drop_zone, "Browse files", self._browse, primary=True, width=130, height=38).pack(side="right", padx=(8, 16))
+        action_button(self.drop_zone, "From clipboard", self._from_clipboard, soft=True, width=130, height=38).pack(side="right")
         if self.dnd_ready:
             for widget in (self.drop_zone, self.src_card):
                 try:
@@ -2099,37 +2325,239 @@ class App(ctk.CTk, _DnD):
                     log_error(traceback.format_exc())
 
     def _build_file_chip(self):
-        self.file_chip = ctk.CTkFrame(self.src_card, corner_radius=13, fg_color=CARD, border_width=1, border_color=LINE)
-        self.chip_badge = ctk.CTkFrame(self.file_chip, width=44, height=52, corner_radius=8, fg_color="#e85555")
-        self.chip_badge.pack(side="left", padx=16, pady=14)
+        self.file_chip = ctk.CTkFrame(self.src_card, corner_radius=14, fg_color=CARD)
+        self.chip_badge = ctk.CTkFrame(self.file_chip, width=40, height=48, corner_radius=9, fg_color="#e5534b")
+        self.chip_badge.pack(side="left", padx=(16, 14), pady=12)
         self.chip_badge.pack_propagate(False)
-        self.chip_ext = label(self.chip_badge, "PDF", 12, "bold", "#ffffff")
+        self.chip_ext = label(self.chip_badge, "PDF", 11, "bold", "#ffffff")
         self.chip_ext.place(relx=.5, rely=.5, anchor="center")
         texts = ctk.CTkFrame(self.file_chip, fg_color="transparent")
         texts.pack(side="left")
         self.chip_name = label(texts, "", 15, "bold")
         self.chip_name.pack(anchor="w")
-        self.chip_meta = label(texts, "", 12, color=MUTED)
+        self.chip_meta = label(texts, "", 12, color=TEXT2)
         self.chip_meta.pack(anchor="w")
-        action_button(self.file_chip, "Replace", self._browse, width=84, height=34, text_color=MUTED).pack(side="right", padx=16)
+        action_button(self.file_chip, "Change", self._browse, width=84, height=34).pack(side="right", padx=16)
         self.chip_state = ctk.CTkLabel(self.file_chip, text="", corner_radius=20, fg_color=ACCENT_SOFT,
                                        text_color=ACCENT, font=font(12, "bold"))
         self.chip_state.pack(side="right", padx=4)
 
     def _build_paste_box(self):
-        self.paste_box = ctk.CTkTextbox(self.src_card, height=150, corner_radius=12, fg_color=CARD,
-                                        text_color=TEXT, font=font(14), wrap="word", border_width=1, border_color=LINE)
+        self.paste_box = ctk.CTkTextbox(self.src_card, height=110, corner_radius=12, fg_color=CARD,
+                                        text_color=TEXT, font=font(14), wrap="word")
         self.paste_box.bind("<KeyRelease>", self._paste_changed)
 
     def _show_source_state(self):
         for widget in (self.drop_zone, self.file_chip, self.paste_box):
             widget.pack_forget()
         if self.source_mode == "Paste text":
-            self.paste_box.pack(fill="x", padx=18, pady=18)
+            self.paste_box.pack(fill="x", padx=14, pady=14)
         elif self.doc is None or self.doc.get("pasted"):
-            self.drop_zone.pack(fill="x", padx=18, pady=18)
+            self.drop_zone.pack(fill="x", padx=14, pady=14)
         else:
-            self.file_chip.pack(fill="x", padx=18, pady=18)
+            self.file_chip.pack(fill="x", padx=14, pady=14)
+
+    def _build_read_card(self, main):
+        card = self.read_card = card_frame(main)
+        card.grid(row=3, column=0, sticky="nsew", pady=(0, 12))
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=20, pady=(16, 2))
+        label(head, "What should be read", 18, "bold").pack(side="left")
+        action_button(head, "None", lambda: self._select_all(False), width=56, height=28, font=font(12, "bold")).pack(side="right")
+        action_button(head, "All", lambda: self._select_all(True), width=48, height=28, font=font(12, "bold")).pack(side="right", padx=6)
+        self.sections_count = label(head, "", 12, color=TEXT2)
+        self.sections_count.pack(side="right", padx=8)
+        self.sections_frame = ctk.CTkScrollableFrame(card, fg_color="transparent", height=60)
+        self.sections_frame.pack(fill="both", expand=True, padx=10, pady=(2, 0))
+        self.sections_frame.grid_columnconfigure(0, weight=1)
+        self.no_sections = label(self.sections_frame, "Choose a file to see its chapters.", 13, color=TEXT2)
+        self.no_sections.grid(row=0, column=0, sticky="w", padx=10, pady=8)
+        options = ctk.CTkFrame(card, fg_color="transparent")
+        options.pack(fill="x", padx=18, pady=(8, 14))
+        self.option_menus = {}
+        for key, title, menu in (("tables", "Tables", TABLES_MENU), ("figures", "Figures", TABLES_MENU),
+                                 ("code", "Code", CODE_MENU), ("links", "Links", LINKS_MENU)):
+            pill = ctk.CTkFrame(options, corner_radius=11, fg_color=CARD)
+            pill.pack(side="left", padx=(0, 8))
+            label(pill, title, 12, color=TEXT2).pack(side="left", padx=(12, 2))
+            current = next(n for n, v in menu.items() if v == self.settings[key])
+            menu_widget = ctk.CTkOptionMenu(pill, values=list(menu), width=124, height=30, corner_radius=9,
+                                            fg_color=CARD, button_color=CARD, button_hover_color=CARD2,
+                                            text_color=TEXT, font=font(12, "bold"), dropdown_font=font(12),
+                                            command=lambda value, k=key, m=menu: self._option_changed(k, m[value]))
+            menu_widget.set(current)
+            menu_widget.pack(side="left", padx=(0, 4), pady=3)
+            self.option_menus[key] = menu_widget
+
+    def _build_voice_card(self, main):
+        card = self.voice_card = card_frame(main)
+        card.grid(row=4, column=0, sticky="ew")
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=20, pady=(16, 10))
+        label(head, "Voice", 18, "bold").pack(side="left")
+        self.pause_seg = self._preset_seg(head, [f"{p:g} s" if p else "None" for p in PAUSE_PRESETS], self._pause_preset)
+        self.pause_seg.pack(side="right")
+        label(head, "Pause", 12, color=TEXT2).pack(side="right", padx=(18, 8))
+        self.speed_seg = self._preset_seg(head, [f"{s:g}×" for s in SPEED_PRESETS], self._speed_preset)
+        self.speed_seg.pack(side="right")
+        label(head, "Speed", 12, color=TEXT2).pack(side="right", padx=(0, 8))
+        self.voice_row = ctk.CTkFrame(card, fg_color="transparent")
+        self.voice_row.pack(fill="x", padx=14, pady=(0, 16))
+        for column in range(5):
+            self.voice_row.grid_columnconfigure(column, weight=1, uniform="vc")
+        self._sync_presets()
+
+    def _preset_seg(self, parent, values, command):
+        return ctk.CTkSegmentedButton(parent, values=values, height=32, corner_radius=10, command=command,
+                                      fg_color=CARD, selected_color=CARD2, selected_hover_color=CARD2,
+                                      unselected_color=CARD, unselected_hover_color=CARD2, text_color=TEXT,
+                                      font=font(12, "bold"))
+
+    def _sync_presets(self):
+        speed = min(SPEED_PRESETS, key=lambda s: abs(s - self.settings["speed"]))
+        pause = min(PAUSE_PRESETS, key=lambda p: abs(p - self.settings["pause"]))
+        self.settings["speed"], self.settings["pause"] = speed, pause
+        self.speed_seg.set(f"{speed:g}×")
+        self.pause_seg.set(f"{pause:g} s" if pause else "None")
+
+    def _speed_preset(self, value):
+        self._speed_changed(float(value.rstrip("×")))
+
+    def _pause_preset(self, value):
+        self._pause_changed(0.0 if value == "None" else float(value.split()[0]))
+
+    def _fill_voice_cards(self):
+        for child in self.voice_row.winfo_children():
+            child.destroy()
+        self.voice_play_buttons = []
+        same = [v for v in self.all_voices if v[:1] == self.voice[:1] and v != self.voice]
+        others = [v for v in self.all_voices if v[:1] != self.voice[:1]]
+        featured = ([self.voice] + same + others)[:4]
+        for column, vid in enumerate(featured):
+            self._voice_card(self.voice_row, vid, column)
+        more = ctk.CTkFrame(self.voice_row, height=118, corner_radius=14, fg_color=PANEL, border_width=1.5, border_color=LINE)
+        more.grid(row=0, column=4, sticky="nsew", padx=5)
+        inner = ctk.CTkFrame(more, fg_color="transparent")
+        inner.place(relx=.5, rely=.5, anchor="center")
+        label(inner, f"+{max(len(self.all_voices) - 4, 0)}", 20, "bold", ACCENT).pack()
+        label(inner, "All voices", 13, "bold", ACCENT).pack()
+        for widget in (more, inner, *inner.winfo_children()):
+            widget.bind("<Button-1>", lambda _e: self.show("voices"))
+        self.preview_btn = self.voice_play_buttons[0] if self.voice_play_buttons else None
+        self._update_buttons()
+
+    def _voice_card(self, parent, vid, column):
+        name, lang, gender = voice_info(vid)
+        selected = vid == self.voice
+        card = ctk.CTkFrame(parent, corner_radius=14, fg_color=ACCENT_SOFT if selected else CARD,
+                            border_width=2 if selected else 0, border_color=ACCENT)
+        card.grid(row=0, column=column, sticky="nsew", padx=5)
+        avatar = ctk.CTkFrame(card, width=40, height=40, corner_radius=13, fg_color="#ffb3b8" if gender == "Female" else "#a0c4ff")
+        avatar.pack(anchor="w", padx=12, pady=(14, 8))
+        avatar.pack_propagate(False)
+        label(avatar, name[:1], 16, "bold", "#10131a").place(relx=.5, rely=.5, anchor="center")
+        label(card, name, 15, "bold").pack(anchor="w", padx=14)
+        label(card, f"{SHORT_LANG.get(lang, lang)} · {gender}", 12, color=TEXT2).pack(anchor="w", padx=14, pady=(0, 12))
+        play = icon_button(card, "play", lambda v=vid: self._preview_voice(v), size=13, box=30,
+                           primary=selected, state="disabled")
+        play.place(relx=1.0, x=-10, y=10, anchor="ne")
+        self.voice_play_buttons.append(play)
+        for widget in (card, avatar, *card.winfo_children()):
+            if widget is not play:
+                widget.bind("<Button-1>", lambda _e, v=vid: self._select_voice(v))
+
+    def _select_voice(self, vid):
+        self.voice = vid
+        self.settings["voice"] = vid
+        self.save_settings()
+        self._fill_voice_cards()
+        self._update_summary_head()
+        if self.screens["voices"].winfo_ismapped():
+            self._fill_voice_page()
+
+    def _update_voice_card(self):
+        self._fill_voice_cards()
+
+    # ---- summary panel ----------------------------------------------------
+
+    def _build_summary(self, screen):
+        panel = self.summary = ctk.CTkFrame(screen, width=400, corner_radius=20, fg_color=PANEL)
+        panel.grid(row=0, column=1, sticky="ns", padx=(0, 24), pady=(20, 18))
+        panel.grid_propagate(False)
+        # Packing order is priority order: the top block, then the Convert button and its options at the bottom,
+        # and the text preview last, so on a short window only the preview gets squeezed.
+        label(panel, "YOUR NARRATION", 11, "bold", MUTED).pack(anchor="w", padx=24, pady=(16, 8))
+        head = ctk.CTkFrame(panel, fg_color="transparent")
+        head.pack(fill="x", padx=24)
+        self.summary_badge = ctk.CTkFrame(head, width=40, height=48, corner_radius=9, fg_color=CARD2)
+        self.summary_badge.pack(side="left", padx=(0, 12))
+        self.summary_badge.pack_propagate(False)
+        self.summary_ext = label(self.summary_badge, "", 11, "bold", "#ffffff")
+        self.summary_ext.place(relx=.5, rely=.5, anchor="center")
+        texts = ctk.CTkFrame(head, fg_color="transparent")
+        texts.pack(side="left", fill="x", expand=True)
+        self.summary_title = label(texts, "No document yet", 15, "bold", anchor="w")
+        self.summary_title.pack(anchor="w", fill="x")
+        self.summary_sub = label(texts, "", 12, color=TEXT2, anchor="w")
+        self.summary_sub.pack(anchor="w", fill="x")
+        stats = ctk.CTkFrame(panel, fg_color="transparent")
+        stats.pack(fill="x", padx=20, pady=(10, 2))
+        stats.grid_columnconfigure((0, 1), weight=1, uniform="stat")
+        self.stat_values = []
+        for caption, column, row, span in (("words to read", 0, 0, 1), ("of audio", 1, 0, 1), ("to make, on this computer", 0, 1, 2)):
+            cell = ctk.CTkFrame(stats, corner_radius=12, fg_color=CARD)
+            cell.grid(row=row, column=column, columnspan=span, sticky="ew", padx=4, pady=3)
+            value = label(cell, "–", 20, "bold")
+            value.pack(anchor="w", padx=14, pady=(7, 0))
+            label(cell, caption, 12, color=TEXT2).pack(anchor="w", padx=14, pady=(0, 7))
+            self.stat_values.append(value)
+        label(panel, "CHAPTERS IN THIS RECORDING", 11, "bold", MUTED).pack(anchor="w", padx=24, pady=(8, 5))
+        self.stack_canvas = tk.Canvas(panel, height=12, highlightthickness=0, bg=mode_color(PANEL))
+        self.stack_canvas.pack(fill="x", padx=24)
+        self.extra_stats = label(panel, "", 12, color=TEXT2, wraplength=350, justify="left", anchor="w")
+        self.extra_stats.pack(anchor="w", padx=24, pady=(4, 6), fill="x")
+
+        foot = ctk.CTkFrame(panel, fg_color="transparent")
+        foot.pack(side="bottom", pady=(0, 12))
+        self.estimate_label = label(foot, "", 12, color=TEXT2)
+        self.estimate_label.pack(side="left")
+        self.change_link = ctk.CTkButton(foot, text="Change", width=56, height=22, fg_color="transparent", hover_color=CARD,
+                                         text_color=ACCENT, font=font(12, "bold"), command=self._choose_output_dir)
+        self.change_link.pack(side="left")
+        self.convert_btn = ctk.CTkButton(panel, text="Convert to MP3", height=52, corner_radius=14, fg_color=CARD2,
+                                         hover_color=ACCENT, text_color=ON_ACCENT, text_color_disabled=MUTED,
+                                         font=font(16, "bold"), command=self.start_convert, state="disabled")
+        self.convert_btn.pack(side="bottom", fill="x", padx=24, pady=(12, 6))
+        self.switches = {}
+        for key, text in reversed((("srt", "Subtitles (.srt)"), ("sync", "Sync data for the Player"),
+                                   ("open_player", "Open the Player when done"))):
+            box = ctk.CTkCheckBox(panel, text=text, checkbox_width=20, checkbox_height=20, corner_radius=6,
+                                  fg_color=ACCENT, hover_color=ACCENT, checkmark_color=ON_ACCENT, border_color=MUTED,
+                                  text_color=TEXT2, font=font(13), command=lambda k=key: self._switch_changed(k))
+            box.select() if self.settings[key] else box.deselect()
+            box.pack(side="bottom", anchor="w", padx=24, pady=(5, 0))
+            self.switches[key] = box
+        label(panel, "WHAT IT WILL SAY", 11, "bold", MUTED).pack(anchor="w", padx=24, pady=(0, 6))
+        self.preview = ctk.CTkTextbox(panel, height=60, corner_radius=12, fg_color=CARD, text_color=TEXT2,
+                                      font=font(13, family="Georgia"), wrap="word")
+        self.preview.pack(fill="both", expand=True, padx=24, pady=(0, 6))
+        self.preview.configure(state="disabled")
+
+    def _update_summary_head(self):
+        doc = self.doc if self.doc and not self.doc.get("pending") else None
+        name, _lang, _g = voice_info(self.voice)
+        if doc:
+            ext = doc.get("ext", "")
+            self.summary_badge.configure(fg_color=EXT_COLORS.get(ext, "#6b7280"))
+            self.summary_ext.configure(text=ext.lstrip(".").upper()[:4] or "TXT")
+            self.summary_title.configure(text=os.path.splitext(doc["name"])[0] if not doc.get("pasted") else "Pasted text")
+        else:
+            self.summary_badge.configure(fg_color=CARD2)
+            self.summary_ext.configure(text="")
+            self.summary_title.configure(text="No document yet")
+        self.summary_sub.configure(text=f"Read by {name} · {self.settings['speed']:g}×")
+
+    # ---- document handling --------------------------------------------------
 
     def _switch_source(self, value):
         self.source_mode = value
@@ -2148,6 +2576,22 @@ class App(ctk.CTk, _DnD):
         if path:
             self.load_path(path)
 
+    def _from_clipboard(self):
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            text = ""
+        if not text.strip():
+            if not self.quiet:
+                from tkinter import messagebox
+                messagebox.showinfo("Kokoro Voice Studio", "The clipboard has no text to read. Copy some text first.")
+            return
+        self.source_seg.set("Paste text")
+        self._switch_source("Paste text")
+        self.paste_box.delete("1.0", "end")
+        self.paste_box.insert("1.0", text)
+        self._apply_paste()
+
     def _on_drop(self, event):
         paths = self.tk.splitlist(event.data)
         if paths:
@@ -2165,6 +2609,7 @@ class App(ctk.CTk, _DnD):
         self.chip_badge.configure(fg_color=EXT_COLORS.get(os.path.splitext(path)[1].lower(), "#6b7280"))
         self.doc = {"path": path, "pending": True, "sections": [], "log": []}
         self._show_source_state()
+        self._update_steps()
         self._load_in_thread(path)
 
     def _load_in_thread(self, path, pdf_raw=None):
@@ -2182,8 +2627,8 @@ class App(ctk.CTk, _DnD):
         self.doc = doc
         self.chip_name.configure(text=doc["name"])
         pages = f"{doc['pages']} pages · " if doc.get("pages") else ""
-        self.chip_meta.configure(text=f"{pages}{doc['words_raw']:,} words")
-        self.chip_state.configure(text="  ✓ Listening edition ready  " if doc["ext"] == ".pdf" else "  ✓ Ready  ")
+        self.chip_meta.configure(text=f"{pages}{doc['words_raw']:,} words · cleaned automatically")
+        self.chip_state.configure(text="  ✓ Ready  ")
         self._fill_sections()
         self._refresh_preview()
         if self.autostart and self.kokoro is not None:
@@ -2221,29 +2666,57 @@ class App(ctk.CTk, _DnD):
     def _fill_sections(self):
         for child in self.sections_frame.winfo_children():
             child.destroy()
-        self.sec_boxes = []
+        self.sec_boxes, self.sec_rows = [], []
         sections = self.doc["sections"] if self.doc and not self.doc.get("pending") else []
         titled = [s for s in sections if s[0]]
-        if not sections:
-            self.no_sections = label(self.sections_frame, "Choose a file to see its chapters.", 12, color=MUTED)
-            self.no_sections.pack(anchor="w", padx=12, pady=6)
+        if not sections or not titled:
+            text = "Choose a file to see its chapters." if not sections else "No chapters detected. The whole document will be read."
+            label(self.sections_frame, text, 13, color=TEXT2).grid(row=0, column=0, sticky="w", padx=10, pady=8)
+            self._update_steps()
             return
-        if not titled:
-            label(self.sections_frame, "No chapters detected. The whole document will be read.", 12,
-                  color=MUTED, wraplength=330, justify="left").pack(anchor="w", padx=12, pady=6)
+        biggest = max(len(t.split()) for _, t in sections) or 1
         for k, (title, text) in enumerate(sections):
-            if not titled:
-                break
+            words = len(text.split())
             row = ctk.CTkFrame(self.sections_frame, fg_color="transparent")
-            row.pack(fill="x", pady=4, padx=8)
-            box = ctk.CTkCheckBox(row, text=(title or "Start of document")[:34], checkbox_width=20,
-                                  checkbox_height=20, corner_radius=6, fg_color=ACCENT, hover_color=ACCENT,
-                                  checkmark_color=ON_ACCENT, border_color=MUTED, text_color=TEXT,
-                                  font=font(13, "bold"), command=self._refresh_preview)
+            row.grid(row=k, column=0, sticky="ew", pady=1)
+            row.grid_columnconfigure(2, weight=1)
+            box = ctk.CTkCheckBox(row, text="", width=26, checkbox_width=20, checkbox_height=20, corner_radius=6,
+                                  fg_color=ACCENT, hover_color=ACCENT, checkmark_color=ON_ACCENT, border_color=MUTED,
+                                  command=lambda i=k: self._section_toggled(i))
             box.select()
-            box.pack(side="left")
-            label(row, f"{len(text.split()):,} words", 12, color=MUTED).pack(side="right")
+            box.grid(row=0, column=0, padx=(8, 4), pady=4)
+            name = label(row, (title or "Start of document")[:36], 13, "bold", anchor="w", width=268)
+            name.grid(row=0, column=1, padx=(6, 12))
+            meter = ctk.CTkProgressBar(row, height=8, corner_radius=4, progress_color=ACCENT, fg_color=CARD)
+            meter.set(words / biggest)
+            meter.grid(row=0, column=2, sticky="ew", padx=(0, 14))
+            minutes = label(row, "", 12, color=TEXT2, width=64, anchor="e")
+            minutes.grid(row=0, column=3, padx=(0, 10))
             self.sec_boxes.append((k, box))
+            self.sec_rows.append({"name": name, "meter": meter, "minutes": minutes, "words": words})
+        self._update_minutes()
+        self._update_steps()
+
+    def _update_minutes(self):
+        for row in self.sec_rows:
+            seconds = row["words"] / WORDS_PER_SECOND / max(self.settings["speed"], 0.1)
+            row["minutes"].configure(text=fmt_duration(seconds) if seconds >= 60 else f"{int(seconds)} s")
+
+    def _section_toggled(self, index):
+        on = bool(dict(self.sec_boxes)[index].get())
+        row = self.sec_rows[index]
+        row["name"].configure(text_color=TEXT if on else MUTED)
+        row["meter"].configure(progress_color=ACCENT if on else MUTED)
+        row["minutes"].configure(text_color=TEXT2 if on else MUTED)
+        self._refresh_preview()
+
+    def _select_all(self, on):
+        for index, box in self.sec_boxes:
+            box.select() if on else box.deselect()
+            row = self.sec_rows[index]
+            row["name"].configure(text_color=TEXT if on else MUTED)
+            row["meter"].configure(progress_color=ACCENT if on else MUTED)
+        self._refresh_preview()
 
     def _selected(self):
         if not self.sec_boxes:
@@ -2267,10 +2740,13 @@ class App(ctk.CTk, _DnD):
             for value in self.stat_values:
                 value.configure(text="–")
             self.extra_stats.configure(text="")
+            self.sections_count.configure(text="")
+            self._draw_stack()
         else:
             self.body = document_text(self.doc, self._selected())
-            self._set_preview(self.body[:1800] + ("…" if len(self.body) > 1800 else ""))
+            self._set_preview(self.body[:1500] + ("…" if len(self.body) > 1500 else ""))
             self._update_stats()
+        self._update_summary_head()
         self._update_buttons()
         self._update_estimate()
 
@@ -2288,138 +2764,50 @@ class App(ctk.CTk, _DnD):
         removed = next((int(m.group(1)) for line in log if (m := re.match(r"page numbers removed: (\d+)", line))), None)
         captions = sum(1 for line in log if "kept caption" in line)
         notes = []
+        if self.sec_boxes:
+            left_out = [self.doc["sections"][k][0] for k, box in self.sec_boxes if not box.get()]
+            if left_out:
+                notes.append("Left out: " + ", ".join(t[:24] for t in left_out[:3]) + ("…" if len(left_out) > 3 else ""))
+            self.sections_count.configure(text=f"{len(self.sec_boxes) - len(left_out)} of {len(self.sec_boxes)} chapters")
+        else:
+            self.sections_count.configure(text="")
         if removed is not None:
             notes.append(f"{removed} page numbers removed")
         if captions:
-            notes.append(f"{captions} tables and figures reduced to captions")
+            notes.append(f"{captions} tables and figures → captions")
         self.extra_stats.configure(text="  ·  ".join(notes))
+        self._draw_stack()
 
-    # ---- right panel: voice and settings ---------------------------------
+    def _draw_stack(self):
+        c = self.stack_canvas
+        c.configure(bg=mode_color(PANEL))
+        c.delete("all")
+        width = max(c.winfo_width(), 340)
+        picked = [(k, self.sec_rows[k]["words"]) for k, box in self.sec_boxes if box.get()] if self.sec_boxes else []
+        if not picked:
+            c.create_rectangle(0, 0, width, 12, fill=mode_color(CARD2), outline="")
+            return
+        total, x = sum(w for _, w in picked), 0
+        for n, (_k, w) in enumerate(picked):
+            span = w / total * width
+            c.create_rectangle(x, 0, max(x + span - 2, x + 2), 12, fill=mode_color(ACCENT) if n % 2 == 0 else mode_color(BLUE), outline="")
+            x += span
 
-    def _build_right(self):
-        right = ctk.CTkFrame(self, width=372, corner_radius=0, fg_color=SIDE)
-        self.right = right
-        right.grid_propagate(False)
-        self.convert_btn = ctk.CTkButton(right, text="Convert to MP3", height=54, corner_radius=14, fg_color=ACCENT,
-                                         hover_color=ACCENT, text_color=ON_ACCENT, font=font(16, "bold"),
-                                         command=self.start_convert, state="disabled",
-                                         text_color_disabled=("#c9e6e2", "#0d4a43"))
-        self.convert_btn.pack(side="bottom", fill="x", padx=24, pady=(4, 20))
-        self.estimate_label = label(right, "", 12, color=MUTED, wraplength=320)
-        self.estimate_label.pack(side="bottom", pady=(0, 2))
-        label(right, "VOICE", 11, "bold", MUTED).pack(anchor="w", padx=24, pady=(22, 8))
-        self.voice_card = ctk.CTkFrame(right, corner_radius=16, fg_color=("#e3f1ee", "#1a2a30"), border_width=1,
-                                       border_color=("#9bd5cb", "#2b5b57"))
-        self.voice_card.pack(fill="x", padx=24)
-        self.voice_avatar = ctk.CTkFrame(self.voice_card, width=52, height=52, corner_radius=15, fg_color="#ffb3b8")
-        self.voice_avatar.pack(side="left", padx=14, pady=12)
-        self.voice_avatar.pack_propagate(False)
-        self.voice_letter = label(self.voice_avatar, "H", 22, "bold", "#6b2d3a")
-        self.voice_letter.place(relx=.5, rely=.5, anchor="center")
-        texts = ctk.CTkFrame(self.voice_card, fg_color="transparent")
-        texts.pack(side="left")
-        self.voice_name = label(texts, "", 17, "bold")
-        self.voice_name.pack(anchor="w")
-        self.voice_sub = label(texts, "", 12, color=MUTED)
-        self.voice_sub.pack(anchor="w")
-        self.preview_btn = ctk.CTkButton(self.voice_card, text="▶", width=40, height=40, corner_radius=20,
-                                         fg_color=ACCENT, hover_color=ACCENT, text_color=ON_ACCENT,
-                                         command=self._preview_voice, state="disabled")
-        self.preview_btn.pack(side="right", padx=16)
-
-        langs = ["All languages"] + [VOICE_LANGS[c] for c in VOICE_LANGS if any(v.startswith(c) for v in self.all_voices)]
-        self.lang_menu = ctk.CTkOptionMenu(right, values=langs, height=32, corner_radius=9, fg_color=CARD2,
-                                           button_color=CARD2, button_hover_color=CARD2, text_color=TEXT,
-                                           font=font(12), dropdown_font=font(12), command=lambda _v: self._fill_voices())
-        self.lang_menu.set(voice_info(self.voice)[1])
-        self.lang_menu.pack(fill="x", padx=24, pady=(10, 4))
-        self.voice_list = ctk.CTkScrollableFrame(right, height=112, fg_color="transparent")
-        self.voice_list.pack(fill="x", padx=16)
-
-        self.speed_label = label(right, "", 13)
-        self.speed_label.pack(anchor="w", padx=24, pady=(10, 2))
-        self.speed_slider = ctk.CTkSlider(right, from_=0.5, to=2.0, number_of_steps=30, progress_color=ACCENT,
-                                          button_color="#ffffff", button_hover_color="#ffffff", fg_color=CARD2,
-                                          command=self._speed_changed)
-        self.speed_slider.set(self.settings["speed"])
-        self.speed_slider.pack(fill="x", padx=24)
-        self.pause_label = label(right, "", 13)
-        self.pause_label.pack(anchor="w", padx=24, pady=(8, 2))
-        self.pause_slider = ctk.CTkSlider(right, from_=0.0, to=1.5, number_of_steps=15, progress_color=ACCENT,
-                                          button_color="#ffffff", button_hover_color="#ffffff", fg_color=CARD2,
-                                          command=self._pause_changed)
-        self.pause_slider.set(self.settings["pause"])
-        self.pause_slider.pack(fill="x", padx=24)
-        self.switches = {}
-        for key, text in (("srt", "Subtitles (.srt)"), ("sync", "Word-level sync data"),
-                          ("open_player", "Open player when done")):
-            sw = ctk.CTkSwitch(right, text=text, progress_color=ACCENT, button_color=("#ffffff", "#e9ecf3"),
-                               fg_color=CARD2, text_color=TEXT, font=font(13),
-                               command=lambda k=key: self._switch_changed(k))
-            sw.select() if self.settings[key] else sw.deselect()
-            sw.pack(anchor="w", padx=24, pady=(8, 0))
-            self.switches[key] = sw
-        out = ctk.CTkFrame(right, fg_color="transparent")
-        out.pack(fill="x", padx=24, pady=(12, 0))
-        label(out, "Save to", 12, color=MUTED).pack(anchor="w")
-        self.out_label = label(out, "", 12, wraplength=250, justify="left")
-        self.out_label.pack(side="left", anchor="w")
-        action_button(out, "Change", self._choose_output_dir, width=70, height=28, text_color=MUTED).pack(side="right")
-        self._fill_voices()
-        self._update_voice_card()
-        self._speed_changed(self.settings["speed"], save=False)
-        self._pause_changed(self.settings["pause"], save=False)
-        self._update_out_label()
-
-    def _fill_voices(self):
-        for child in self.voice_list.winfo_children():
-            child.destroy()
-        wanted = self.lang_menu.get()
-        for vid in self.all_voices:
-            name, lang, gender = voice_info(vid)
-            if wanted != "All languages" and lang != wanted:
-                continue
-            selected = vid == self.voice
-            row = ctk.CTkFrame(self.voice_list, corner_radius=10, fg_color=CARD if selected else "transparent")
-            row.pack(fill="x", pady=1)
-            dot = ctk.CTkFrame(row, width=28, height=28, corner_radius=9,
-                               fg_color="#ffb3b8" if gender == "Female" else "#a0c4ff")
-            dot.pack(side="left", padx=(8, 10), pady=6)
-            dot.pack_propagate(False)
-            label(dot, name[:1], 12, "bold", "#10131a").place(relx=.5, rely=.5, anchor="center")
-            label(row, name, 13, color=TEXT if selected else MUTED).pack(side="left")
-            label(row, f"{SHORT_LANG.get(lang, lang[:7])} · {gender[:1]}", 11, color=DIM).pack(side="right", padx=10)
-            for widget in [row] + list(row.winfo_children()):
-                widget.bind("<Button-1>", lambda _e, v=vid: self._select_voice(v))
-
-    def _select_voice(self, vid):
-        self.voice = vid
-        self.settings["voice"] = vid
-        self.save_settings()
-        self._update_voice_card()
-        self._fill_voices()
-
-    def _update_voice_card(self):
-        name, lang, gender = voice_info(self.voice)
-        self.voice_name.configure(text=name)
-        self.voice_sub.configure(text=f"{lang} · {gender}" if gender else lang)
-        self.voice_letter.configure(text=name[:1])
-        self.voice_avatar.configure(fg_color="#ffb3b8" if gender == "Female" else "#a0c4ff")
+    # ---- speed, pause and voices ---------------------------------------------
 
     def _speed_changed(self, value, save=True):
-        value = round(float(value) * 20) / 20
+        value = float(value)
         self.settings["speed"] = value
-        self.speed_label.configure(text=f"Speed   {value:.2f}×")
         if save:
             self.save_settings()
-            if self.body:
-                self._update_stats()
+        self._update_minutes()
+        if self.body:
+            self._update_stats()
+        self._update_summary_head()
         self._update_estimate()
 
     def _pause_changed(self, value, save=True):
-        value = round(float(value), 1)
-        self.settings["pause"] = value
-        self.pause_label.configure(text=f"Pause between paragraphs   {value:.1f} s")
+        self.settings["pause"] = float(value)
         if save:
             self.save_settings()
 
@@ -2429,15 +2817,15 @@ class App(ctk.CTk, _DnD):
 
     def _update_estimate(self):
         if self.body.strip():
-            words, audio, wait = estimate(self.body, self.settings["speed"])
-            self.estimate_label.configure(
-                text=f"≈ {fmt_duration(wait)} to make · {fmt_duration(audio)} of audio")
+            folder = default_output_dir(self.settings)
+            self.estimate_label.configure(text="Saves to " + (("…" + folder[-30:]) if len(folder) > 32 else folder) + " · ")
+            self.change_link.pack(side="left")
         else:
             self.estimate_label.configure(text="Choose a file or paste some text")
+            self.change_link.pack_forget()
 
     def _update_out_label(self):
-        folder = default_output_dir(self.settings)
-        self.out_label.configure(text=("…" + folder[-34:]) if len(folder) > 36 else folder)
+        self._update_estimate()
 
     def _choose_output_dir(self):
         from tkinter import filedialog
@@ -2445,19 +2833,19 @@ class App(ctk.CTk, _DnD):
         if folder:
             self.settings["output_dir"] = folder
             self.save_settings()
-            self._update_out_label()
+            self._update_estimate()
+            if hasattr(self, "settings_out"):
+                self.settings_out.configure(text=default_output_dir(self.settings))
 
-    def _preview_voice(self):
+    def _preview_voice(self, vid=None):
         import sounddevice as sd
         if self.preview_playing:
             sd.stop()
             self.preview_playing = False
-            self.preview_btn.configure(text="▶")
             return
-        voice, speed = self.voice, self.settings["speed"]
+        voice, speed = vid or self.voice, self.settings["speed"]
         sample = PREVIEW_BY_PREFIX.get(voice[:1], PREVIEW_BY_PREFIX["a"])
         self.preview_playing = True
-        self.preview_btn.configure(text="■")
 
         def work():
             try:
@@ -2472,26 +2860,53 @@ class App(ctk.CTk, _DnD):
 
     def _on_preview_done(self):
         self.preview_playing = False
-        self.preview_btn.configure(text="▶")
 
-    # ---- conversion with a live progress card -----------------------------
+    # ---- converting view ------------------------------------------------------
 
-    def _build_progress_card(self, screen):
-        card = card_frame(screen)
-        self.progress_card = card
-        self.ring = tk.Canvas(card, width=116, height=116, highlightthickness=0, bg=mode_color(PANEL))
-        self.ring.pack(side="left", padx=(26, 18), pady=22)
-        right = ctk.CTkFrame(card, fg_color="transparent")
-        right.pack(side="left", fill="both", expand=True, padx=(0, 22), pady=18)
-        self.prog_title = label(right, "", 16, "bold")
-        self.prog_title.pack(anchor="w")
-        self.prog_detail = label(right, "", 12, color=MUTED)
-        self.prog_detail.pack(anchor="w", pady=(2, 8))
-        self.prog_say = ctk.CTkLabel(right, text="", font=font(14, family="Georgia"), justify="left", anchor="w",
-                                     wraplength=720, fg_color=CARD, corner_radius=12, text_color=TEXT)
-        self.prog_say.pack(fill="x", pady=(0, 10), ipady=8, ipadx=8)
-        self.prog_buttons = ctk.CTkFrame(right, fg_color="transparent")
-        self.prog_buttons.pack(anchor="w")
+    def _build_progress_view(self, screen):
+        view = self.progress_card = ctk.CTkFrame(screen, fg_color="transparent")
+        view.grid_columnconfigure(0, weight=1)
+        view.grid_rowconfigure(0, weight=1)
+        stage = ctk.CTkFrame(view, corner_radius=24, fg_color=PANEL)
+        stage.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+        inner = ctk.CTkFrame(stage, fg_color="transparent")
+        inner.place(relx=.5, rely=.5, anchor="center")
+        self.prog_title = label(inner, "Converting", 13, "bold", ACCENT)
+        self.prog_title.pack()
+        self.prog_doc = label(inner, "", 26, "bold")
+        self.prog_doc.pack(pady=(2, 0))
+        self.prog_voice = label(inner, "", 13, color=TEXT2)
+        self.prog_voice.pack()
+        self.ring = tk.Canvas(inner, width=200, height=200, highlightthickness=0, bg=mode_color(PANEL))
+        self.ring.pack(pady=(12, 0))
+        self.prog_detail = label(inner, "", 13, color=TEXT2)
+        self.prog_detail.pack(pady=(0, 10))
+        pills = ctk.CTkFrame(inner, fg_color="transparent")
+        pills.pack()
+        self.prog_stages = []
+        for caption in ("Read", "Clean", "Speak", "Save"):
+            pill = ctk.CTkLabel(pills, text=caption, corner_radius=16, height=30, fg_color=CARD, text_color=TEXT2,
+                                font=font(12, "bold"))
+            pill.pack(side="left", padx=4)
+            self.prog_stages.append(pill)
+        self.prog_say = ctk.CTkLabel(inner, text="", font=font(17, family="Georgia"), justify="left", anchor="w",
+                                     wraplength=640, fg_color=CARD, corner_radius=16, text_color=TEXT)
+        self.prog_say.pack(pady=(18, 10), ipady=12, ipadx=16)
+        self.prog_buttons = ctk.CTkFrame(inner, fg_color="transparent")
+        self.prog_buttons.pack(pady=(4, 0))
+        tiles = ctk.CTkFrame(view, fg_color="transparent", width=330)
+        tiles.grid(row=0, column=1, sticky="ns")
+        tiles.grid_propagate(False)
+        self.tile_values = {}
+        for key, caption in (("elapsed", "ELAPSED"), ("speed", "SPEED"), ("words", "WORDS SPOKEN"), ("saved", "WILL BE SAVED AS")):
+            tile = ctk.CTkFrame(tiles, corner_radius=18, fg_color=PANEL)
+            tile.pack(fill="x", pady=(0, 12))
+            label(tile, caption, 11, "bold", MUTED).pack(anchor="w", padx=20, pady=(16, 2))
+            value = label(tile, "–", 22 if key != "saved" else 14, "bold", anchor="w", wraplength=280, justify="left")
+            value.pack(anchor="w", padx=20, pady=(0, 14), fill="x")
+            self.tile_values[key] = value
+        self.tile_bar = ctk.CTkProgressBar(tiles.winfo_children()[2], height=8, progress_color=ACCENT, fg_color=CARD)
+        self.tile_bar.pack(fill="x", padx=20, pady=(0, 14))
         self._draw_ring(0.0)
 
     def _draw_ring(self, fraction, done=False):
@@ -2499,26 +2914,37 @@ class App(ctk.CTk, _DnD):
         c = self.ring
         c.configure(bg=mode_color(PANEL))
         c.delete("all")
-        c.create_arc(12, 12, 104, 104, start=90, extent=-359.9, style="arc", width=11, outline=mode_color(CARD2))
-        if fraction > 0:
-            c.create_arc(12, 12, 104, 104, start=90, extent=-max(min(fraction, 0.9999), 0.001) * 360, style="arc",
-                         width=11, outline=mode_color(ACCENT))
-        c.create_text(58, 58, text="✓" if done else f"{int(fraction * 100)}%", fill=mode_color(TEXT),
-                      font=(FONT, 20, "bold"))
+        from PIL import ImageTk
+        self.ring_photo = ImageTk.PhotoImage(ring_image(200, fraction, mode_color(CARD2), mode_color(ACCENT), 14))
+        c.create_image(0, 0, image=self.ring_photo, anchor="nw")
+        c.create_text(100, 100, text="✓" if done else f"{int(fraction * 100)}%", fill=mode_color(TEXT),
+                      font=(FONT, 40, "bold"))
+
+    def _set_stage(self, active):
+        """Highlight the pipeline pills: names before active are done, active is current."""
+        for index, pill in enumerate(self.prog_stages):
+            if index < active:
+                pill.configure(fg_color=ACCENT_SOFT, text_color=ACCENT)
+            elif index == active:
+                pill.configure(fg_color=ACCENT, text_color=ON_ACCENT)
+            else:
+                pill.configure(fg_color=CARD, text_color=TEXT2)
 
     def _show_progress(self, on):
         if on:
-            self.src_card.grid_remove()
-            self.progress_card.grid(row=1, column=0, columnspan=2, sticky="ew", padx=34, pady=(20, 18))
+            self.create_main.grid_remove()
+            self.summary.grid_remove()
+            self.progress_card.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=(30, 24), pady=(20, 18))
         else:
             self.progress_card.grid_remove()
-            self.src_card.grid(row=1, column=0, columnspan=2, sticky="ew", padx=34, pady=(20, 18))
+            self.create_main.grid()
+            self.summary.grid()
 
     def _set_progress_buttons(self, specs):
         for child in self.prog_buttons.winfo_children():
             child.destroy()
         for text, command, primary in specs:
-            action_button(self.prog_buttons, text, command, primary=primary, width=130, height=34).pack(side="left", padx=(0, 8))
+            action_button(self.prog_buttons, text, command, primary=primary, width=140, height=38).pack(side="left", padx=6)
 
     def start_convert(self):
         from tkinter import messagebox
@@ -2539,15 +2965,24 @@ class App(ctk.CTk, _DnD):
         titles = [t for k, (t, _) in enumerate(doc["sections"]) if t and (picked is None or k in picked)]
         weights = [len(c) for c, _ in split_chunks(body)]
         total_chars, started = max(sum(weights), 1), time.time()
+        words = len(body.split())
         self.job = {"out": out, "weights": weights, "total": total_chars, "started": started, "name": name,
-                    "voice": voice, "words": len(body.split())}
+                    "voice": voice, "words": words, "speed": speed}
         self.busy = True
         self.cancel.clear()
         self._update_buttons()
         self._draw_ring(0.0)
-        self.prog_title.configure(text=f"Converting {name}")
+        self._set_stage(2)
+        self.prog_title.configure(text="Converting")
+        self.prog_doc.configure(text=os.path.splitext(name)[0])
+        self.prog_voice.configure(text=f"{voice_info(voice)[0]} · {speed:g}× · {words:,} words")
         self.prog_detail.configure(text="Starting…")
         self.prog_say.configure(text="")
+        self.tile_values["elapsed"].configure(text="0 s")
+        self.tile_values["speed"].configure(text="–")
+        self.tile_values["words"].configure(text=f"0  of {words:,}")
+        self.tile_values["saved"].configure(text=os.path.basename(out))
+        self.tile_bar.set(0)
         self._set_progress_buttons([("Cancel", self._cancel_convert, False)])
         self._show_progress(True)
 
@@ -2556,11 +2991,12 @@ class App(ctk.CTk, _DnD):
                 dur, segments = synthesize(
                     self.kokoro, body, out, voice, speed, cancel=self.cancel, pause=pause,
                     progress=lambda i, n: self.q.put(("progress", i, n)),
-                    on_chunk=lambda i, n, text: self.q.put(("chunk", i, n, text)))
+                    on_chunk=lambda i, n, text: self.q.put(("chunk", i, n, text)),
+                    on_audio=lambda seconds: self.q.put(("audio", seconds)))
                 write_sidecars(out, segments, dur, voice, source, srt=srt, sync=sync,
                                chapters=find_chapters(titles, segments))
                 library_add({"title": os.path.splitext(name)[0] if name != "Pasted text" else os.path.basename(out)[:-4],
-                             "path": out, "duration": round(dur, 1), "voice": voice, "words": len(body.split()),
+                             "path": out, "duration": round(dur, 1), "voice": voice, "words": words,
                              "created": time.strftime("%Y-%m-%d %H:%M"), "source": name})
                 self.q.put(("done", out, dur))
             except InterruptedError:
@@ -2574,18 +3010,26 @@ class App(ctk.CTk, _DnD):
         self.cancel.set()
         self.prog_detail.configure(text="Stopping after this sentence…")
 
+    def _on_audio(self, seconds):
+        self.job["audio"] = seconds
+
     def _on_chunk(self, i, total, text):
-        self.prog_say.configure(text="  " + (text if len(text) < 260 else text[:257] + "…"))
+        self.prog_say.configure(text=(text if len(text) < 240 else text[:237] + "…"))
 
     def _on_progress(self, i, total):
         job = self.job
-        done_chars = sum(job["weights"][:i])
-        fraction = done_chars / job["total"]
+        fraction = sum(job["weights"][:i]) / job["total"]
         elapsed = time.time() - job["started"]
         left = elapsed * (1 - fraction) / fraction if fraction > 0.02 else None
         self._draw_ring(fraction)
         self.prog_detail.configure(
             text=f"Part {i} of {total}" + (f"  ·  about {fmt_duration(left)} left" if left is not None else ""))
+        spoken = int(job["words"] * fraction)
+        self.tile_values["elapsed"].configure(text=fmt_duration(elapsed))
+        if elapsed > 3 and job.get("audio"):
+            self.tile_values["speed"].configure(text=f"{job['audio'] / elapsed:.1f}× real time")
+        self.tile_values["words"].configure(text=f"{spoken:,}  of {job['words']:,}")
+        self.tile_bar.set(fraction)
 
     def _finish_job(self):
         self.busy = False
@@ -2594,13 +3038,15 @@ class App(ctk.CTk, _DnD):
     def _on_done(self, out, duration):
         self._finish_job()
         self._draw_ring(1.0, done=True)
+        self._set_stage(4)
         self.prog_title.configure(text="Finished")
         self.prog_detail.configure(text=f"{fmt_duration(duration)} of audio saved to {out}")
-        self.prog_say.configure(text="  Subtitles and sync data were saved next to it.")
+        self.prog_say.configure(text="Subtitles and sync data were saved next to it.")
+        self.tile_bar.set(1)
         self._set_progress_buttons([("Open player", lambda: self.open_player(out), True),
                                     ("Show in folder", lambda: self.show_in_folder(out), False),
                                     ("New narration", self._new_narration, False)])
-        self._refresh_recent()
+        self._library_changed()
         if self.settings["open_player"]:
             self.open_player(out)
 
@@ -2636,7 +3082,14 @@ class App(ctk.CTk, _DnD):
             log_error(traceback.format_exc())
             messagebox.showerror("Kokoro Voice Studio", f"Could not open the player:\n{exc}")
 
-    # ---- library ----------------------------------------------------------
+    # ---- library and voices ---------------------------------------------------
+
+    def _search_box(self, parent, on_change, placeholder):
+        entry = ctk.CTkEntry(parent, placeholder_text=placeholder, width=300, height=40, corner_radius=12,
+                             fg_color=PANEL, border_width=1, border_color=LINE, text_color=TEXT,
+                             placeholder_text_color=MUTED, font=font(13))
+        entry.bind("<KeyRelease>", lambda _e: on_change())
+        return entry
 
     def _build_library(self):
         screen = ctk.CTkFrame(self.content, fg_color="transparent")
@@ -2644,47 +3097,63 @@ class App(ctk.CTk, _DnD):
         screen.grid_columnconfigure(0, weight=1)
         screen.grid_rowconfigure(1, weight=1)
         head = ctk.CTkFrame(screen, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", padx=34, pady=(26, 14))
+        head.grid(row=0, column=0, sticky="ew", padx=32, pady=(22, 12))
         titles = ctk.CTkFrame(head, fg_color="transparent")
         titles.pack(side="left")
-        label(titles, "Library", 24, "bold").pack(anchor="w")
-        label(titles, "Everything you have narrated. Play it with synced text, or find the file.", 13, color=MUTED).pack(anchor="w")
-        action_button(head, "Open audio file…", self._open_audio, width=150, height=38).pack(side="right")
+        label(titles, "Library", 28, "bold").pack(anchor="w")
+        label(titles, "Everything you have narrated. Open one to listen with the text following along.", 13, color=TEXT2).pack(anchor="w")
+        action_button(head, "Open audio file…", self._open_audio, soft=True, width=150, height=40).pack(side="right")
+        self.lib_search = self._search_box(head, self._refresh_library, "Search your narrations")
+        self.lib_search.pack(side="right", padx=12)
         self.lib_list = ctk.CTkScrollableFrame(screen, fg_color="transparent")
-        self.lib_list.grid(row=1, column=0, sticky="nsew", padx=26, pady=(0, 20))
+        self.lib_list.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 16))
 
     def _refresh_library(self):
         for child in self.lib_list.winfo_children():
             child.destroy()
         items = load_json_file(LIBRARY_PATH, [])
-        if not items:
-            label(self.lib_list, "No narrations yet. Convert a document and it appears here.", 14, color=MUTED).pack(pady=40)
-        for entry in items:
-            row = card_frame(self.lib_list)
-            row.pack(fill="x", padx=8, pady=5)
-            ext = os.path.splitext(entry.get("source", ""))[1].lower()
-            badge = ctk.CTkFrame(row, width=42, height=48, corner_radius=9, fg_color=EXT_COLORS.get(ext, "#0f766e"))
-            badge.pack(side="left", padx=16, pady=12)
-            badge.pack_propagate(False)
-            label(badge, (ext.lstrip(".") or "MP3").upper()[:4], 11, "bold", "#ffffff").place(relx=.5, rely=.5, anchor="center")
-            texts = ctk.CTkFrame(row, fg_color="transparent")
-            texts.pack(side="left")
-            label(texts, entry.get("title", ""), 15, "bold").pack(anchor="w")
-            exists = os.path.isfile(entry["path"])
-            meta = [fmt_duration(entry.get("duration", 0)), voice_info(entry["voice"])[0] if entry.get("voice") else "",
-                    entry.get("created", "")]
-            label(texts, "  ·  ".join(m for m in meta if m) if exists else "File not found: " + entry["path"],
-                  12, color=MUTED if exists else "#ff6b6b").pack(anchor="w")
-            action_button(row, "Remove", lambda p=entry["path"]: self._lib_remove(p), width=80, height=32,
-                          text_color=MUTED).pack(side="right", padx=(0, 16))
-            if exists:
-                action_button(row, "Folder", lambda p=entry["path"]: self.show_in_folder(p), width=76, height=32).pack(side="right", padx=4)
-                action_button(row, "Play", lambda p=entry["path"]: self.open_player(p), primary=True, width=76, height=32).pack(side="right", padx=4)
+        query = self.lib_search.get().strip().lower()
+        shown = [e for e in items if query in e.get("title", "").lower()]
+        if not shown:
+            box = ctk.CTkFrame(self.lib_list, fg_color="transparent")
+            box.pack(pady=70)
+            icon_label(box, "headphone", 44, MUTED).pack()
+            label(box, "No narrations yet" if not items else "Nothing matches your search", 18, "bold").pack(pady=(10, 2))
+            label(box, "Convert a document and it appears here." if not items else "Try a different word.", 13, color=TEXT2).pack()
+            if not items:
+                action_button(box, "New narration", lambda: self.show("create"), primary=True, width=150, height=40).pack(pady=16)
+            return
+        width = max(self.content.winfo_width(), 900)
+        columns = max(2, min(4, (width - 80) // 300))
+        for column in range(columns):
+            self.lib_list.grid_columnconfigure(column, weight=1, uniform="lib")
+        for n, entry in enumerate(shown):
+            self._library_card(entry, n // columns, n % columns)
+
+    def _library_card(self, entry, row, column):
+        path, title = entry["path"], entry.get("title", "")
+        exists = os.path.isfile(path)
+        card = ctk.CTkFrame(self.lib_list, corner_radius=18, fg_color=PANEL)
+        card.grid(row=row, column=column, sticky="nsew", padx=8, pady=8)
+        cover = ctk.CTkFrame(card, height=104, corner_radius=14, fg_color=cover_color(title) if exists else CARD2)
+        cover.pack(fill="x", padx=12, pady=(12, 8))
+        cover.pack_propagate(False)
+        label(cover, initials(title), 32, "bold", "#ffffff" if exists else MUTED, ).place(relx=.5, rely=.5, anchor="center")
+        label(card, title[:40] + ("…" if len(title) > 40 else ""), 14, "bold", anchor="w").pack(anchor="w", padx=14, fill="x")
+        meta = [fmt_duration(entry.get("duration", 0)), voice_info(entry["voice"])[0] if entry.get("voice") else "", entry.get("created", "")[:10]]
+        label(card, "  ·  ".join(m for m in meta if m) if exists else "File not found", 12,
+              color=TEXT2 if exists else "#ff7a7a", anchor="w").pack(anchor="w", padx=14, fill="x")
+        tools = ctk.CTkFrame(card, fg_color="transparent")
+        tools.pack(fill="x", padx=10, pady=(8, 12))
+        icon_button(tools, "delete", lambda p=path: self._lib_remove(p), size=14, box=32).pack(side="right", padx=(6, 4))
+        if exists:
+            icon_button(tools, "folder", lambda p=path: self.show_in_folder(p), size=14, box=32).pack(side="right")
+            icon_button(tools, "play", lambda p=path: self.open_player(p), size=14, box=34, primary=True).pack(side="left", padx=4)
+            cover.bind("<Button-1>", lambda _e, p=path: self.open_player(p))
 
     def _lib_remove(self, path):
         library_remove(path)
         self._refresh_library()
-        self._refresh_recent()
 
     def _open_audio(self):
         from tkinter import filedialog
@@ -2697,6 +3166,65 @@ class App(ctk.CTk, _DnD):
                      "voice": "", "words": 0, "created": time.strftime("%Y-%m-%d %H:%M"), "source": ""})
         self._refresh_library()
         self.open_player(path)
+
+    def _build_voices(self):
+        screen = ctk.CTkFrame(self.content, fg_color="transparent")
+        self.screens["voices"] = screen
+        screen.grid_columnconfigure(0, weight=1)
+        screen.grid_rowconfigure(2, weight=1)
+        head = ctk.CTkFrame(screen, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=32, pady=(22, 10))
+        titles = ctk.CTkFrame(head, fg_color="transparent")
+        titles.pack(side="left")
+        label(titles, "Voices", 28, "bold").pack(anchor="w")
+        self.voice_count = label(titles, "", 13, color=TEXT2)
+        self.voice_count.pack(anchor="w")
+        self.voice_search = self._search_box(head, self._fill_voice_page, "Search voices")
+        self.voice_search.pack(side="right")
+        self.lang_row = ctk.CTkFrame(screen, fg_color="transparent")
+        self.lang_row.grid(row=1, column=0, sticky="ew", padx=32, pady=(0, 10))
+        self.voice_page_list = ctk.CTkScrollableFrame(screen, fg_color="transparent")
+        self.voice_page_list.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 16))
+        self.voice_page_list.grid_columnconfigure((0, 1), weight=1, uniform="vp")
+
+    def _set_voice_lang(self, value):
+        self.voice_lang.set(value)
+        self._fill_voice_page()
+
+    def _fill_voice_page(self):
+        for child in self.lang_row.winfo_children():
+            child.destroy()
+        languages = ["All"] + [VOICE_LANGS[c] for c in VOICE_LANGS if any(v.startswith(c) for v in self.all_voices)]
+        for lang in languages:
+            on = self.voice_lang.get() == lang
+            ctk.CTkButton(self.lang_row, text=lang, height=32, corner_radius=16, width=20, font=font(12, "bold"),
+                          fg_color=ACCENT_SOFT if on else PANEL, hover_color=CARD2, text_color=ACCENT if on else TEXT2,
+                          command=lambda v=lang: self._set_voice_lang(v)).pack(side="left", padx=(0, 8))
+        for child in self.voice_page_list.winfo_children():
+            child.destroy()
+        query, wanted = self.voice_search.get().strip().lower(), self.voice_lang.get()
+        shown = [v for v in self.all_voices
+                 if (wanted == "All" or voice_info(v)[1] == wanted) and query in voice_info(v)[0].lower() + " " + voice_info(v)[1].lower()]
+        self.voice_count.configure(text=f"{len(shown)} of {len(self.all_voices)} voices · pick one, or press play to hear a sample")
+        for n, vid in enumerate(shown):
+            name, lang, gender = voice_info(vid)
+            selected = vid == self.voice
+            row = ctk.CTkFrame(self.voice_page_list, corner_radius=14, fg_color=ACCENT_SOFT if selected else PANEL)
+            row.grid(row=n // 2, column=n % 2, sticky="ew", pady=4, padx=8)
+            avatar = ctk.CTkFrame(row, width=44, height=44, corner_radius=14, fg_color="#ffb3b8" if gender == "Female" else "#a0c4ff")
+            avatar.pack(side="left", padx=(14, 14), pady=10)
+            avatar.pack_propagate(False)
+            label(avatar, name[:1], 17, "bold", "#10131a").place(relx=.5, rely=.5, anchor="center")
+            texts = ctk.CTkFrame(row, fg_color="transparent")
+            texts.pack(side="left")
+            label(texts, name, 15, "bold").pack(anchor="w")
+            label(texts, f"{lang} · {gender}", 12, color=TEXT2).pack(anchor="w")
+            if selected:
+                label(row, "✓ In use", 13, "bold", ACCENT).pack(side="right", padx=18)
+            else:
+                action_button(row, "Use this voice", lambda v=vid: self._select_voice(v), width=130, height=34, soft=True).pack(side="right", padx=14)
+            icon_button(row, "play", lambda v=vid: self._preview_voice(v), size=14, box=36, primary=selected,
+                        state="normal" if self.kokoro is not None else "disabled").pack(side="right")
 
     # ---- settings ----------------------------------------------------------
 
@@ -2755,6 +3283,7 @@ class App(ctk.CTk, _DnD):
 
     def _recolor(self):
         self._draw_ring(*self.ring_state)
+        self._draw_stack()
 
     def _choose_output_dir_settings(self):
         self._choose_output_dir()
@@ -2764,7 +3293,7 @@ class App(ctk.CTk, _DnD):
         from tkinter import messagebox
         if messagebox.askyesno("Kokoro Voice Studio", "Remove all entries from the library list?\nYour MP3 files are not deleted."):
             save_json_file(LIBRARY_PATH, [])
-            self._refresh_recent()
+            self._library_changed()
 
     # ---- self-test: drives the real handlers, no clicking ------------------
 
@@ -2960,9 +3489,9 @@ def main():
         return
     try:
         enable_dpi_awareness()
-        opts = {a: args[i + 1] for i, a in enumerate(args[:-1]) if a in ("--selftest", "--preload", "--screen")}
+        opts = {a: args[i + 1] for i, a in enumerate(args[:-1]) if a in ("--selftest", "--preload", "--screen", "--size")}
         App(selftest=opts.get("--selftest"), preload=opts.get("--preload"), screen=opts.get("--screen"),
-            autostart="--autostart" in args).mainloop()
+            autostart="--autostart" in args, size=opts.get("--size")).mainloop()
     except Exception:
         log_error(traceback.format_exc())
         raise

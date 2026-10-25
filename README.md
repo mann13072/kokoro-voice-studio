@@ -73,8 +73,8 @@ The voice model downloads on first start. Prefer to fetch it up front? `python k
 
 ## Using it (three steps; we counted)
 
-1. **Add text.** Drop a file onto the window, click *Browse files*, or switch to *Paste text*.
-2. **Choose.** Untick the chapters you don't want. Pick a voice. Decide how fast it should talk
+1. **Add text.** Drop a file onto the window, click *Browse files*, or switch to *Paste text* (or hit *From clipboard*).
+2. **Choose.** Untick the chapters you don't want. Pick a voice card. Decide how fast it should talk
    (1.0× is "calm narrator", 2.0× is "auctioneer on espresso").
 3. **Convert to MP3.** The Player opens when it's done.
 
@@ -83,6 +83,11 @@ The app **never overwrites** an existing file: convert the same document twice a
 not a tearful goodbye to the first one.
 
 ![Light theme](docs/screenshots/create-light.png)
+
+Everything you narrate lands in the **Library**, and all 54 voices live on the **Voices** page, searchable by language.
+
+![Library](docs/screenshots/library.png)
+![Voices](docs/screenshots/voices.png)
 
 ---
 
@@ -172,7 +177,7 @@ We would rather you hear these from us than discover them at 2 a.m.
 
 | Problem | What to do |
 |---|---|
-| *Voice model not ready* in the sidebar | You're offline or the download was interrupted. Click *Try again*, or download the two files by hand into `models/` (see [models/README.md](models/README.md)). |
+| *The voice model is not ready* banner | You're offline or the download was interrupted. Click *Try again*, or download the two files by hand into `models/` (see [models/README.md](models/README.md)). |
 | Windows SmartScreen or antivirus frowns at the `.exe` | The app isn't code-signed, which is common for programs made with PyInstaller. Run it from source (Option B) if you'd rather not trust a stranger's binary. Honestly, fair. |
 | No sound in the Player | Check that a playback device is selected in Windows. The Player still shows the text without one. |
 | Drag and drop does nothing | Use *Browse files*. Windows blocks dropping onto a window that runs as administrator. |
