@@ -32,7 +32,7 @@ program, not a website wearing a trench coat.
 * 🗣️ **54 voices in 9 languages**, with a preview button, plus speed and pause controls.
 * 🎧 **A Player that follows along.** The sentence being spoken lights up, and so does the current *word*. Your original
   text sits beside it, with everything that wasn't spoken left grey, so nothing gets quietly lost. Chapters,
-  waveform, A–B loop, sleep timer, bookmarks. It's a tiny audiobook app that you built yourself.
+  waveform, A–B loop, sleep timer, bookmarks, and a playback speed from 0.05× to 3× that keeps the voice's pitch. It's a tiny audiobook app that you built yourself.
 * 🎬 **Free subtitles.** Every MP3 comes with an `.srt` file and a `.json` timing file. Video editors, rejoice.
 * 📊 **Live progress.** A ring, a time-left estimate, and the exact sentence being spoken right now.
   Cancel any time; the half-finished audio is kept, because we're not monsters.

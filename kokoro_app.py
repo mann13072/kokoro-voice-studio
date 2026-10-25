@@ -1089,25 +1089,51 @@ def fmt_clock(seconds):
 
 
 class AudioPlayer:
-    """Plays int16 audio through one output stream and reports the playback position."""
+    """Plays int16 audio through one output stream and reports the playback position.
+
+    At speeds other than 1x the audio is time-stretched with WSOLA (overlap-add of Hann-windowed frames, each
+    nudged to the best waveform match), so the voice gets faster or slower without changing its pitch."""
+
+    FRAME = 1200       # samples per stretch frame (50 ms at 24 kHz)
+    SEARCH = 300       # how far a frame may slide to find the best match
+    MIN_SPEED, MAX_SPEED = 0.05, 3.0
 
     def __init__(self, data, rate):
+        import numpy as np
         import sounddevice as sd
         self.data, self.rate = data, rate
-        self.pos = 0
+        self.pos = 0.0
         self.playing = False
         self.volume = 1.0
+        self.speed = 1.0
+        self.lock = threading.Lock()
+        self.window = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(self.FRAME) / self.FRAME)).astype("float32")[:, None]
+        self._reset_stretch()
         self.stream = sd.OutputStream(samplerate=rate, channels=data.shape[1], dtype="int16",
                                       callback=self._fill)
         self.stream.start()
+
+    def _reset_stretch(self):
+        import numpy as np
+        self.prev = None
+        self.acc = np.zeros((self.FRAME, self.data.shape[1]), dtype="float32")
+        self.ready = np.zeros((0, self.data.shape[1]), dtype="float32")
 
     def _fill(self, outdata, frames, time_info, status):
         if not self.playing:
             outdata.fill(0)
             return
-        end = min(self.pos + frames, len(self.data))
-        n = end - self.pos
-        chunk = self.data[self.pos:end]
+        with self.lock:
+            if abs(self.speed - 1.0) < 0.001:
+                self._fill_plain(outdata, frames)
+            else:
+                self._fill_stretched(outdata, frames)
+
+    def _fill_plain(self, outdata, frames):
+        start = int(self.pos)
+        end = min(start + frames, len(self.data))
+        n = end - start
+        chunk = self.data[start:end]
         if self.volume < 0.999:
             chunk = (chunk * self.volume).astype("int16")
         outdata[:n] = chunk
@@ -1116,20 +1142,77 @@ class AudioPlayer:
             self.playing = False
         self.pos = end
 
+    def _fill_stretched(self, outdata, frames):
+        import numpy as np
+        hop = self.FRAME // 2
+        while len(self.ready) < frames and self.pos < len(self.data):
+            self.ready = np.concatenate((self.ready, self._next_hop(hop)))
+        take = min(frames, len(self.ready))
+        block = self.ready[:take] * self.volume
+        self.ready = self.ready[take:]
+        outdata[:take] = np.clip(block, -32768, 32767).astype("int16")
+        if take < frames:
+            outdata[take:] = 0
+            self.playing = False
+
+    def _slice(self, start, length):
+        import numpy as np
+        part = self.data[start:start + length].astype("float32")
+        if len(part) < length:
+            part = np.concatenate((part, np.zeros((length - len(part), part.shape[1]), dtype="float32")))
+        return part
+
+    def _next_hop(self, hop):
+        """Produce `hop` output samples: pick the best-matching frame near the nominal position, overlap-add it."""
+        import numpy as np
+        target = int(self.pos)
+        if self.prev is None:
+            start = target
+        else:
+            natural = self._slice(self.prev + hop, self.FRAME)[:, 0]
+            low = max(target - self.SEARCH, 0)
+            span = 2 * self.SEARCH + 1
+            seg = self._slice(low, span + self.FRAME - 1)[:, 0]
+            energy = np.cumsum(np.concatenate(([0.0], seg.astype("float64") ** 2)))
+            windows = energy[self.FRAME:self.FRAME + span] - energy[:span]
+            score = np.correlate(seg, natural, "valid") / np.sqrt(windows + 1.0)
+            start = low + int(np.argmax(score))
+        self.acc += self._slice(start, self.FRAME) * self.window
+        out = self.acc[:hop].copy()
+        self.acc[:self.FRAME - hop] = self.acc[hop:]
+        self.acc[self.FRAME - hop:] = 0
+        self.prev = start
+        self.pos += hop * self.speed
+        return out
+
     @property
     def time(self):
-        return self.pos / self.rate
+        if abs(self.speed - 1.0) < 0.001:
+            return self.pos / self.rate
+        lead = len(self.ready) * self.speed + (self.FRAME // 2) * (self.speed - 1)
+        return max(self.pos - lead, 0.0) / self.rate
+
+    def set_speed(self, value):
+        value = min(max(float(value), self.MIN_SPEED), self.MAX_SPEED)
+        with self.lock:
+            self.pos = self.time * self.rate
+            self.speed = value
+            self._reset_stretch()
 
     def play(self):
-        if self.pos >= len(self.data):
-            self.pos = 0
+        with self.lock:
+            if self.pos >= len(self.data):
+                self.pos = 0.0
+                self._reset_stretch()
         self.playing = True
 
     def pause(self):
         self.playing = False
 
     def seek(self, seconds):
-        self.pos = max(0, min(int(seconds * self.rate), len(self.data)))
+        with self.lock:
+            self.pos = float(max(0, min(int(seconds * self.rate), len(self.data))))
+            self._reset_stretch()
 
     def close(self):
         self.playing = False
@@ -1345,23 +1428,71 @@ def reveal_in_folder(path):
         log_error(traceback.format_exc())
 
 
-class ToolButton(ctk.CTkFrame):
-    """A small rounded control with an icon and a caption."""
+class Tooltip:
+    """Small hover label for icon-only controls; `owner.tip` is read each time so it can change."""
 
-    def __init__(self, parent, icon, text, command):
-        super().__init__(parent, height=38, corner_radius=11, fg_color=CARD)
+    def __init__(self, owner, widgets):
+        self.owner, self.window, self.job = owner, None, None
+        for widget in widgets:
+            widget.bind("<Enter>", self._enter, add="+")
+            widget.bind("<Leave>", self._hide, add="+")
+            widget.bind("<Button-1>", self._hide, add="+")
+
+    def _enter(self, _event):
+        self._hide()
+        self.job = self.owner.after(450, self._show)
+
+    def _show(self):
+        tip = getattr(self.owner, "tip", "")
+        if not tip:
+            return
+        self.window = tk.Toplevel(self.owner)
+        self.window.wm_overrideredirect(True)
+        tk.Label(self.window, text=tip, bg=mode_color(CARD2), fg=mode_color(TEXT), padx=8, pady=4,
+                 font=(FONT, 9)).pack()
+        x = self.owner.winfo_rootx() + self.owner.winfo_width() // 2 - 30
+        self.window.wm_geometry(f"+{x}+{self.owner.winfo_rooty() - 34}")
+
+    def _hide(self, _event=None):
+        if self.job:
+            self.owner.after_cancel(self.job)
+            self.job = None
+        if self.window:
+            self.window.destroy()
+            self.window = None
+
+
+class ToolButton(ctk.CTkFrame):
+    """A quiet icon control. A short badge appears beside the icon only when there is something to show."""
+
+    def __init__(self, parent, icon, tip, command):
+        super().__init__(parent, height=32, corner_radius=10, fg_color="transparent")
+        self.tip, self.active = tip, False
         self.icon = icon_label(self, icon, 15, TEXT2)
-        self.icon.pack(side="left", padx=(12, 6), pady=8)
-        self.text = label(self, text, 12, "bold", TEXT2)
-        self.text.pack(side="left", padx=(0, 14))
-        for widget in (self, self.icon, self.text):
-            widget.bind("<Button-1>", lambda _e: command())
+        self.icon.pack(side="left", padx=9, pady=6)
+        self.text = label(self, "", 11, "bold", TEXT2)
+        parts = (self, self.icon, self.text)
+        for widget in parts:
+            widget.bind("<Button-1>", lambda _e: command(), add="+")
+            widget.bind("<Enter>", lambda _e: self._paint(True), add="+")
+            widget.bind("<Leave>", lambda _e: self._paint(False), add="+")
+        Tooltip(self, parts)
+
+    def _paint(self, hover):
+        self.configure(fg_color=ACCENT_SOFT if self.active else CARD if hover else "transparent")
 
     def set_text(self, text):
         self.text.configure(text=text)
+        if text:
+            self.icon.pack_configure(padx=(9, 3))
+            self.text.pack(side="left", padx=(0, 9))
+        else:
+            self.text.pack_forget()
+            self.icon.pack_configure(padx=9)
 
     def set_active(self, on):
-        self.configure(fg_color=ACCENT_SOFT if on else CARD)
+        self.active = on
+        self._paint(False)
         for widget in (self.icon, self.text):
             widget.configure(text_color=ACCENT if on else TEXT2)
 
@@ -1394,6 +1525,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self.data, self.rate, self.player, self.decoded, self.load_pct = None, 24000, None, None, 0
         self.cur, self.cur_word, self.cur_ws, self.cur_offsets, self.cur_chapter = -1, -1, None, None, -1
         self.loop_a, self.loop_b, self.sleep_at = None, None, None
+        self.speed = 1.0
         self.draw_job, self.head, self.bars, self.bar_played, self.fine = None, None, [], 0, None
         self._build()
         self._fill_text()
@@ -1402,6 +1534,8 @@ class PlayerWindow(ctk.CTkToplevel):
         self.bind("<Left>", lambda e: self.skip(-5))
         self.bind("<Right>", lambda e: self.skip(5))
         self.bind("<Control-b>", lambda e: self.add_bookmark())
+        self.bind("<bracketleft>", lambda e: self._nudge_speed(-0.1))
+        self.bind("<bracketright>", lambda e: self._nudge_speed(0.1))
         threading.Thread(target=self._decode, daemon=True).start()
         self.after(60, self._tick)
         self.after(250, lambda: (self.lift(), self.focus_force()))
@@ -1448,6 +1582,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self.total_label.configure(text=f"/ {fmt_clock(self.duration)}")
         try:
             self.player = AudioPlayer(data, rate)
+            self.player.set_speed(self.speed)
         except Exception as exc:
             log_error(traceback.format_exc())
             self.load_label.configure(text=f"No audio output available ({exc})")
@@ -1555,37 +1690,61 @@ class PlayerWindow(ctk.CTkToplevel):
         self.load_label.pack(side="left", padx=14)
         centre = ctk.CTkFrame(bar, fg_color="transparent")
         centre.grid(row=0, column=1)
-        for text, command in (("−10", lambda: self.skip(-10)),):
-            ctk.CTkButton(centre, text=text, width=44, height=44, corner_radius=22, fg_color=CARD, hover_color=CARD2,
-                          text_color=TEXT, font=font(13, "bold"), command=command).pack(side="left", padx=4)
-        icon_button(centre, "prev", self.prev_sentence, size=16, box=44).pack(side="left", padx=4)
-        self.play_btn = icon_button(centre, "play", self.toggle, size=24, box=62, primary=True)
-        self.play_btn.pack(side="left", padx=8)
-        icon_button(centre, "next", self.next_sentence, size=16, box=44).pack(side="left", padx=4)
-        ctk.CTkButton(centre, text="+10", width=44, height=44, corner_radius=22, fg_color=CARD, hover_color=CARD2,
-                      text_color=TEXT, font=font(13, "bold"), command=lambda: self.skip(10)).pack(side="left", padx=4)
+        ghost = dict(corner_radius=18, fg_color="transparent", hover_color=CARD, text_color=TEXT2)
+        ctk.CTkButton(centre, text="−10", width=36, height=36, font=font(12, "bold"),
+                      command=lambda: self.skip(-10), **ghost).pack(side="left", padx=2)
+        icon_button(centre, "prev", self.prev_sentence, size=15, box=36, **ghost).pack(side="left", padx=2)
+        self.play_btn = icon_button(centre, "play", self.toggle, size=22, box=52, primary=True)
+        self.play_btn.pack(side="left", padx=10)
+        icon_button(centre, "next", self.next_sentence, size=15, box=36, **ghost).pack(side="left", padx=2)
+        ctk.CTkButton(centre, text="+10", width=36, height=36, font=font(12, "bold"),
+                      command=lambda: self.skip(10), **ghost).pack(side="left", padx=2)
         tools = ctk.CTkFrame(bar, fg_color="transparent")
         tools.grid(row=0, column=2, sticky="e")
-        self.mark_btn = ToolButton(tools, "star", "Bookmark", self.add_bookmark)
-        self.mark_btn.pack(side="left", padx=4)
-        self.loop_btn = ToolButton(tools, "repeat", "A–B loop", self._loop_click)
-        self.loop_btn.pack(side="left", padx=4)
-        sleep = ctk.CTkFrame(tools, height=38, corner_radius=11, fg_color=CARD)
-        sleep.pack(side="left", padx=4)
-        icon_label(sleep, "moon", 15, TEXT2).pack(side="left", padx=(12, 0))
-        self.sleep_menu = ctk.CTkOptionMenu(sleep, values=["Sleep: off", "Sleep: 15 min", "Sleep: 30 min", "Sleep: 60 min"],
-                                            width=116, height=30, corner_radius=9, fg_color=CARD, button_color=CARD,
-                                            button_hover_color=CARD2, text_color=TEXT2, font=font(12, "bold"),
-                                            dropdown_font=font(12), command=self._sleep_changed)
-        self.sleep_menu.pack(side="left", padx=(2, 4), pady=4)
-        volume = ctk.CTkFrame(tools, height=38, corner_radius=11, fg_color=CARD)
-        volume.pack(side="left", padx=4)
-        icon_label(volume, "volume", 15, TEXT2).pack(side="left", padx=(12, 6))
-        self.vol = ctk.CTkSlider(volume, from_=0, to=1, width=84, progress_color=ACCENT, button_color="#ffffff",
+        self.mark_btn = ToolButton(tools, "star", "Add a bookmark  (Ctrl+B)", self.add_bookmark)
+        self.mark_btn.pack(side="left", padx=1)
+        self.loop_btn = ToolButton(tools, "repeat", "Loop a passage: click at the start, then at the end", self._loop_click)
+        self.loop_btn.pack(side="left", padx=1)
+        self.sleep_btn = ToolButton(tools, "moon", "Sleep timer", self._sleep_menu)
+        self.sleep_btn.pack(side="left", padx=1)
+        self._build_speed(tools)
+        icon_label(tools, "volume", 15, TEXT2).pack(side="left", padx=(12, 6))
+        self.vol = ctk.CTkSlider(tools, from_=0, to=1, width=70, height=14, progress_color=ACCENT, button_color="#ffffff",
                                  button_hover_color="#ffffff", fg_color=CARD2, command=self._volume)
         self.vol.set(1.0)
-        self.vol.pack(side="left", padx=(0, 12))
+        self.vol.pack(side="left", padx=(0, 2))
         self._set_view(self.view.get())
+
+    def _build_speed(self, parent):
+        """Playback speed, 0.05x to 3x, pitch unchanged: a small stepper; click the value for presets."""
+        box = ctk.CTkFrame(parent, height=32, corner_radius=10, fg_color=CARD)
+        box.pack(side="left", padx=(10, 0))
+        quiet = dict(height=28, corner_radius=8, fg_color="transparent", hover_color=CARD2, text_color=TEXT2,
+                     font=font(14, "bold"))
+        ctk.CTkButton(box, text="−", width=26, command=lambda: self._nudge_speed(-0.05), **quiet).pack(side="left", padx=(2, 0), pady=2)
+        value_style = {**quiet, "text_color": TEXT, "font": font(12, "bold")}
+        self.speed_label = ctk.CTkButton(box, text="1.00×", width=56, command=self._speed_menu, **value_style)
+        self.speed_label.pack(side="left", pady=2)
+        ctk.CTkButton(box, text="+", width=26, command=lambda: self._nudge_speed(0.05), **quiet).pack(side="left", padx=(0, 2), pady=2)
+        box.tip = "Playback speed: − / + step 0.05, click the number for presets  ( [ and ] keys )"
+        Tooltip(box, (box,))
+
+    def _speed_menu(self):
+        menu = tk.Menu(self, tearoff=0, bg=mode_color(CARD), fg=mode_color(TEXT), activebackground=mode_color(ACCENT),
+                       activeforeground=mode_color(ON_ACCENT), font=(FONT, 10), borderwidth=0)
+        for value in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0):
+            menu.add_command(label=f"{value:g}×" + ("   (normal)" if value == 1.0 else ""), command=lambda v=value: self._set_speed(v))
+        menu.tk_popup(self.speed_label.winfo_rootx(), self.speed_label.winfo_rooty() + self.speed_label.winfo_height())
+
+    def _set_speed(self, value):
+        value = round(min(max(float(value), AudioPlayer.MIN_SPEED), AudioPlayer.MAX_SPEED) / 0.05) * 0.05
+        self.speed = value
+        self.speed_label.configure(text=f"{value:.2f}×")
+        if self.player:
+            self.player.set_speed(value)
+
+    def _nudge_speed(self, step):
+        self._set_speed(self.speed + step)
 
     def _text_pane(self, parent, fnt, fg, bg, pad):
         holder = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1835,20 +1994,28 @@ class PlayerWindow(ctk.CTkToplevel):
         t = self.player.time
         if self.loop_a is None:
             self.loop_a = t
-            self.loop_btn.set_text("Set the end…")
+            self.loop_btn.set_text("A…")
             self.loop_btn.set_active(True)
         elif self.loop_b is None:
             self.loop_a, self.loop_b = sorted((self.loop_a, t))
-            self.loop_btn.set_text("Looping ✕")
+            self.loop_btn.set_text("A–B ✕")
         else:
             self.loop_a = self.loop_b = None
-            self.loop_btn.set_text("A–B loop")
+            self.loop_btn.set_text("")
             self.loop_btn.set_active(False)
         self._draw()
 
-    def _sleep_changed(self, value):
-        minutes = {"Sleep: 15 min": 15, "Sleep: 30 min": 30, "Sleep: 60 min": 60}.get(value)
+    def _sleep_menu(self):
+        menu = tk.Menu(self, tearoff=0, bg=mode_color(CARD), fg=mode_color(TEXT), activebackground=mode_color(ACCENT),
+                       activeforeground=mode_color(ON_ACCENT), font=(FONT, 10), borderwidth=0)
+        for minutes, text in ((0, "Sleep timer off"), (15, "Stop in 15 minutes"), (30, "Stop in 30 minutes"), (60, "Stop in 60 minutes")):
+            menu.add_command(label=text, command=lambda m=minutes: self._set_sleep(m))
+        menu.tk_popup(self.sleep_btn.winfo_rootx(), self.sleep_btn.winfo_rooty() + self.sleep_btn.winfo_height())
+
+    def _set_sleep(self, minutes):
         self.sleep_at = time.time() + minutes * 60 if minutes else None
+        self.sleep_btn.set_text(f"{minutes}m" if minutes else "")
+        self.sleep_btn.set_active(bool(minutes))
 
     def add_bookmark(self):
         if not self.player or not self.source and not self.segments:
@@ -1887,7 +2054,7 @@ class PlayerWindow(ctk.CTkToplevel):
             if self.sleep_at and time.time() >= self.sleep_at:
                 self.player.pause()
                 self.sleep_at = None
-                self.sleep_menu.set("Sleep: off")
+                self._set_sleep(0)
             self.play_btn.configure(text=glyph("pause" if self.player.playing else "play"))
         if self.head is not None:
             x = t / self.duration * max(self.canvas.winfo_width(), 1)
@@ -3383,6 +3550,21 @@ class App(ctk.CTk, _DnD):
         def after_play(out):
             moved = self.player.player.time
             note("playback position advances", moved > 0.5, f"{moved:.1f}s")
+            self.player._set_speed(2.0)
+            fast_from = self.player.player.time
+            self.after(1500, lambda: after_fast(out, fast_from))
+
+        def after_fast(out, fast_from):
+            gained = self.player.player.time - fast_from
+            note("2x playback moves about twice as fast", 2.0 < gained < 4.0, f"{gained:.1f}s in 1.5s")
+            self.player._set_speed(0.5)
+            slow_from = self.player.player.time
+            self.after(1500, lambda: after_slow(out, slow_from))
+
+        def after_slow(out, slow_from):
+            gained = self.player.player.time - slow_from
+            note("0.5x playback moves about half as fast", 0.4 < gained < 1.2, f"{gained:.1f}s in 1.5s")
+            self.player._set_speed(1.0)
             self.player.seek(1.0)
             self.player.add_bookmark()
             note("bookmark saved to the sync file", bool(load_sidecar(out).get("bookmarks")))
